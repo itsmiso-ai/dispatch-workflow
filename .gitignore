@@ -1,0 +1,49 @@
+# Ignore everything by default.
+*
+
+# Allow Git metadata files.
+!.gitignore
+!README.md
+
+# Allow selected docs directory entries.
+!docs/
+docs/*
+
+# Allow selected scripts directory entries.
+!scripts/
+scripts/*
+
+# Mission Control workflow scripts.
+!scripts/mission_control_reporter.py
+!scripts/issue_lane_judge.py
+!scripts/project_groom.py
+!scripts/project_backlog_sync.py
+!scripts/wishlist_read_board.py
+!scripts/wishlist_read_gpt_audit_board.py
+!scripts/pr_fix_queue.py
+!scripts/github_followup_watcher.py
+!scripts/context-budget.py
+!scripts/research_before_task.py
+!scripts/sync_summary.py
+!scripts/wishlist-cron-prompt-v2.md
+!scripts/llama-benchmark.sh
+
+# Explicit never-track rules.
+HEARTBEAT.md
+cron/
+cron/**
+.state/
+.state/**
+*.env
+.env
+.env.*
+*.log
+*.key
+*.pem
+*.crt
+*.token
+*.secret
+__pycache__/
+*.pyc
+*.md.bak
+*.bak
