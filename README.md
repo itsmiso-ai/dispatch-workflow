@@ -38,13 +38,25 @@ The Mission Control application lives separately at `misospace/mission-control`.
 | `pr_fix_queue.py` | PR review-fix queue management |
 | `project_backlog_sync.py` | Sync GitHub issues to Vibe Coding project |
 | `project_groom.py` | Route issues to Ready/Backlog/lanes |
-| `wishlist_read_board.py` | Read Ready normal-lane items from project |
-| `wishlist_read_gpt_audit_board.py` | Read Ready escalated-lane audit items |
+| `wishlist_read_board.py` | **DEPRECATED** — Workers now consume Mission Control queue APIs directly (`GET /api/agents/{agentName}/queue?lane=normal`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
+| `wishlist_read_gpt_audit_board.py` | **DEPRECATED** — Workers now consume Mission Control queue APIs directly (`GET /api/agents/{agentName}/queue?lane=escalated`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
 | `mission_control_reporter.py` | Report agent runs to Mission Control |
 | `context-budget.py` | Audit OpenClaw context token overhead |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Sync session summaries to wiki |
-| `wishlist-cron-prompt-v2.md` | Wishlist cron prompt template |
+
+## Worker Prompt Migration (Issue #70)
+
+Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Mission Control queue APIs:
+
+- **Normal lane:** `GET /api/agents/{agentName}/queue?lane=normal`
+- **Escalated lane:** `GET /api/agents/{agentName}/queue?lane=escalated`
+
+Workers claim work via `POST /api/issues/claim` and update status via `POST /api/issues/move`. No GitHub Projects GraphQL mutations are used in worker prompts.
+
+Affected cron jobs:
+- `(Saffron): 35B Wishlist Chip` — normal lane, uses MC normal queue
+- `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses MC escalated queue
 
 ## Security
 

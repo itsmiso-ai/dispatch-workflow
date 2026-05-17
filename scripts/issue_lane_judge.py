@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Judge whether a GitHub issue belongs in the normal or GPT lane.
+"""Judge whether a GitHub issue belongs in the normal or escalated lane.
+
+Lane compatibility:
+  - "escalated" is the canonical lane name (replaces legacy "gpt").
+  - The model prompt returns "escalated"; legacy "gpt" values are auto-mapped.
 
 This is intentionally model-backed. Scripts may identify structural audit parents,
 but concrete issue routing should be an engineering judgment, not keyword soup.
@@ -13,6 +17,14 @@ import sys
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 OPENCLAW = os.environ.get("OPENCLAW", "openclaw")
 DEFAULT_MODEL = "litellm/self-hosted"
+
+# Legacy lane aliases → canonical names.
+LANE_ALIASES = {"gpt": "escalated"}
+
+
+def normalize_lane(lane: str) -> str:
+    """Map legacy lane aliases to canonical names."""
+    return LANE_ALIASES.get(lane, lane)
 
 
 def run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
@@ -54,16 +66,16 @@ def build_prompt(repo: str, number: int, issue: dict) -> str:
 Decide which execution lane should own this GitHub issue.
 
 Return ONLY compact JSON with this exact schema:
-{{"lane":"normal"|"gpt"|"backlog","confidence":"high"|"medium"|"low","reason":"short reason"}}
+{{"lane":"normal"|"escalated"|"backlog","confidence":"high"|"medium"|"low","reason":"short reason"}}
 
 Lane definitions:
 - normal: concrete, scoped, testable implementation work suitable for the self-hosted 35B worker.
-- gpt: requires GPT-level judgment before/during work: audit parent decomposition, architecture/security/API/auth boundary design, database/schema migration strategy, distributed/cross-service design, ambiguous product behavior, broad refactor with unclear safe slice, explicit RFC/design/alternatives decision.
+- escalated: requires GPT-level judgment before/during work: audit parent decomposition, architecture/security/API/auth boundary design, database/schema migration strategy, distributed/cross-service design, ambiguous product behavior, broad refactor with unclear safe slice, explicit RFC/design/alternatives decision.
 - backlog: not actionable yet, placeholder, missing enough detail, already decomposed parent with no direct work.
 
 Rules:
-- Do not route to GPT just because labels include needs-gpt, escalated, priority/p1, or because the issue came from an audit.
-- Do route audit parent/umbrella issues with broad findings to GPT for decomposition/design unless already decomposed.
+- Do not route to escalated just because labels include needs-escalation, needs-gpt, priority/p1, or because the issue came from an audit.
+- Do route audit parent/umbrella issues with broad findings to escalated for decomposition/design unless already decomposed.
 - Documentation, tests, CI, lint, release/version drift, bounded backend/frontend fixes, and concrete follow-up issues usually go normal.
 - If the issue already chooses a reasonable implementation approach and has acceptance criteria, prefer normal.
 - If confidence is low, choose backlog rather than guessing.
@@ -118,9 +130,9 @@ def judge(repo: str, number: int, model: str = DEFAULT_MODEL) -> dict:
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout or "model judge failed").strip())
     data = parse_json_response(r.stdout)
-    lane = data.get("lane")
+    lane = normalize_lane(data.get("lane", ""))
     confidence = data.get("confidence")
-    if lane not in {"normal", "gpt", "backlog"}:
+    if lane not in {"normal", "escalated", "backlog"}:
         raise ValueError(f"invalid lane: {lane!r}")
     if confidence not in {"high", "medium", "low"}:
         raise ValueError(f"invalid confidence: {confidence!r}")
