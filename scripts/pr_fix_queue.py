@@ -3,6 +3,11 @@
 
 The heartbeat follow-up watcher enqueues open PRs that need follow-up. The
 wishlist workers consume queued PRs before selecting new project-board work.
+
+Lane compatibility:
+  - "escalated" is the canonical lane name (replaces legacy "gpt").
+  - "gpt" is accepted as an alias and is auto-migrated to "escalated".
+  - New items prefer "escalated"; stored items with "lane: gpt" are migrated.
 """
 
 from __future__ import annotations
@@ -14,12 +19,19 @@ from pathlib import Path
 from typing import Any
 
 STATE_PATH = Path("/home/node/.openclaw/workspace-saffron/.state/pr_fix_queue.json")
-VALID_LANES = {"normal", "gpt", "needs-human"}
+# Canonical lanes; "gpt" is a legacy alias (see LANE_ALIASES).
+VALID_LANES = {"normal", "escalated", "needs-human"}
+LEGACY_LANE_ALIAS = {"gpt": "escalated"}
 VALID_STATUSES = {"queued", "fixed", "blocked", "stale", "ignored"}
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def normalize_lane(lane: str) -> str:
+    """Map legacy lane aliases to canonical names."""
+    return LEGACY_LANE_ALIAS.get(lane, lane)
 
 
 def load_state() -> dict[str, Any]:
@@ -38,6 +50,23 @@ def load_state() -> dict[str, Any]:
 def save_state(state: dict[str, Any]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def migrate_legacy_lanes(state: dict[str, Any]) -> bool:
+    """Return True if any items were migrated."""
+    changed = False
+    for key, item in state.get("items", {}).items():
+        raw_lane = item.get("lane", "")
+        canonical = normalize_lane(raw_lane)
+        if canonical != raw_lane:
+            item["lane"] = canonical
+            ts = now_iso()
+            item.setdefault("history", []).append(
+                {"at": ts, "action": "migrate_lane", "from": raw_lane, "to": canonical}
+            )
+            item["updatedAt"] = ts
+            changed = True
+    return changed
 
 
 def item_id(repo: str, pr: int | str) -> str:
@@ -69,10 +98,15 @@ def enqueue(
     head_sha: str | None = None,
     author: str | None = None,
 ) -> dict[str, Any]:
-    if lane not in VALID_LANES:
+    # Accept legacy aliases but canonicalize to new names.
+    if lane not in VALID_LANES and normalize_lane(lane) not in VALID_LANES:
         lane = "needs-human"
+    lane = normalize_lane(lane)
 
     state = load_state()
+    # Migrate any legacy lane values on every enqueue.
+    migrate_legacy_lanes(state)
+
     key = item_id(repo, pr)
     timestamp = now_iso()
     existing = state["items"].get(key)
@@ -137,7 +171,8 @@ def queued_items(lane: str | None = None, include_blocked: bool = False) -> list
         allowed_statuses.add("blocked")
     selected = [item for item in items if item.get("status") in allowed_statuses]
     if lane:
-        selected = [item for item in selected if item.get("lane") == lane]
+        canonical_lane = normalize_lane(lane)
+        selected = [item for item in selected if normalize_lane(item.get("lane", "")) == canonical_lane]
     selected.sort(key=lambda item: (item.get("queuedAt") or "", item.get("repo") or "", item.get("pr") or 0))
     return selected
 

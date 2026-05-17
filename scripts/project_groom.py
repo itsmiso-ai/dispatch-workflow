@@ -45,10 +45,18 @@ TRACKED_REPOS = [
     "misospace/windowstead",
 ]
 
-GPT_AUDIT_LABELS = {"audit", "needs-gpt"}
+GPT_AUDIT_LABELS = {"audit", "needs-gpt", "needs-escalation"}
 GPT_AUDIT_TITLE_PREFIXES = ("weekly tech debt audit:", "tech debt audit:")
 GPT_AUDIT_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
+
+# Lane compatibility: "escalated" is canonical; "gpt" is legacy alias.
+LANE_ALIASES = {"gpt": "escalated"}
+
+
+def normalize_lane(lane: str) -> str:
+    """Map legacy lane aliases to canonical names."""
+    return LANE_ALIASES.get(lane, lane)
 
 
 def gh(args: list, capture=True) -> subprocess.CompletedProcess:
@@ -200,29 +208,30 @@ def apply_lane_judgment(item: dict) -> str | None:
     reason = judgment.get("reason", "")
     print(f"      lane judge -> {lane} ({confidence}): {reason}")
 
-    if lane == "gpt":
-        if not issue_has_label(item["labels"], "needs-gpt"):
-            if add_label(item["repo"], item["issue_number"], "needs-gpt"):
-                print("      -> added needs-gpt label")
+    canonical = normalize_lane(lane)
+    if canonical == "escalated":
+        if not (issue_has_label(item["labels"], "needs-gpt") or issue_has_label(item["labels"], "needs-escalation")):
+            if add_label(item["repo"], item["issue_number"], "needs-escalation"):
+                print("      -> added needs-escalation label")
             else:
-                print("      -> failed to add needs-gpt label")
+                print("      -> failed to add needs-escalation label")
         if item["status"] != "Ready":
             if move_item(item["item_id"], "Ready"):
-                print("      -> Ready (GPT lane)")
+                print("      -> Ready (Escalated lane)")
         return lane
 
-    if lane == "normal":
-        if issue_has_label(item["labels"], "needs-gpt"):
-            if remove_label(item["repo"], item["issue_number"], "needs-gpt"):
-                print("      -> removed stale needs-gpt label")
+    elif canonical == "normal":
+        if (issue_has_label(item["labels"], "needs-gpt") or issue_has_label(item["labels"], "needs-escalation")):
+            if (remove_label(item["repo"], item["issue_number"], "needs-gpt") or remove_label(item["repo"], item["issue_number"], "needs-escalation")):
+                print("      -> removed stale needs-gpt/needs-escalation labels")
             else:
-                print("      -> failed to remove stale needs-gpt label")
+                print("      -> failed to remove stale needs-gpt/needs-escalation labels")
         if item["status"] != "Ready":
             if move_item(item["item_id"], "Ready"):
                 print("      -> Ready (normal lane)")
         return lane
 
-    if lane == "backlog":
+    elif canonical == "backlog":
         if item["status"] != "Backlog":
             if move_item(item["item_id"], "Backlog"):
                 print("      -> Backlog (judge says not actionable)")
@@ -635,7 +644,8 @@ def main():
                 print(f"  [{item['repo']} #{item['issue_number']}] {item['issue_title']}")
                 print(f"      labels: {sorted(item['labels'])}")
                 lane = apply_lane_judgment(item)
-                if lane == "normal" or lane == "gpt":
+                canonical_lane = normalize_lane(lane)
+                if canonical_lane == "normal" or canonical_lane == "escalated":
                     promoted_count += 1
                 elif lane is None:
                     print(f"      -> keeping in Backlog (lane judge unavailable)")
@@ -678,7 +688,7 @@ def main():
         if i["status"] in ("Ready", "In Progress")
         and i["repo"] in TRACKED_REPOS
         and i["issue_state"] == "OPEN"
-        and issue_has_label(i["labels"], "needs-gpt")
+        and (issue_has_label(i["labels"], "needs-gpt") or issue_has_label(i["labels"], "needs-escalation"))
         and not is_gpt_audit_issue(i)
     ]
     if routing_candidates:
@@ -689,7 +699,8 @@ def main():
             print(f"      labels: {sorted(item['labels'])}")
             before_status = item["status"]
             lane = apply_lane_judgment(item)
-            if lane in ("normal", "gpt", "backlog"):
+            canonical_lane = normalize_lane(lane)
+            if canonical_lane in ("normal", "escalated", "backlog"):
                 changed = True
         if changed:
             items = get_project_items()
@@ -703,7 +714,7 @@ def main():
         and i["repo"] in TRACKED_REPOS
         and i["issue_state"] == "OPEN"
         and not is_gpt_audit_issue(i)
-        and not issue_has_label(i["labels"], "needs-gpt")
+        and not (issue_has_label(i["labels"], "needs-gpt") or issue_has_label(i["labels"], "needs-escalation"))
     ]
     if normal_active_items:
         print("[*] Phase 4b: Reconciling normal items with open PR state...")
@@ -753,7 +764,7 @@ def main():
             items = get_project_items()
 
     queued_normal_pr_fixes = queued_pr_fixes("normal")
-    queued_gpt_pr_fixes = queued_pr_fixes("gpt")
+    queued_gpt_pr_fixes = queued_pr_fixes("escalated")
     queued_human_pr_fixes = queued_pr_fixes("needs-human", include_blocked=True)
 
     ready_items = [i for i in items if i["status"] == "Ready" and i["repo"] in TRACKED_REPOS and i["issue_state"] == "OPEN"]
@@ -761,7 +772,7 @@ def main():
     gpt_audit_items = [
         i for i in ready_items + in_progress_items
         if (
-            (is_gpt_audit_issue(i) or issue_has_label(i["labels"], "needs-gpt"))
+            (is_gpt_audit_issue(i) or issue_has_label(i["labels"], "needs-gpt") or issue_has_label(i["labels"], "needs-escalation"))
             and not audit_already_decomposed(i["repo"], i["issue_number"], i["labels"])
         )
     ]

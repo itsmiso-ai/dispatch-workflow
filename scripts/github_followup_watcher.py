@@ -136,14 +136,14 @@ def infer_lane(repo: str, issue_number: int | None, title: str, labels: list[str
     label_set = {label.lower() for label in labels}
     title_l = title.lower()
     if (
-        "needs-gpt" in label_set
+        ("needs-gpt" in label_set or "needs-escalation" in label_set)
         or "audit" in label_set
         or "umbrella" in label_set
         or title_l.startswith(("weekly tech debt audit:", "tech debt audit:"))
         or "weekly tech debt audit:" in title_l
         or "[audit]" in title_l
     ):
-        return "gpt"
+        return "escalated"
 
     if repo and issue_number:
         try:

@@ -132,7 +132,7 @@ def main():
         }
         if is_decomposed_audit_parent(item_data):
             continue
-        if is_weekly_audit_parent(item_data) or "needs-gpt" in {str(label).lower() for label in labels}:
+        if is_weekly_audit_parent(item_data) or ("needs-gpt" in {str(label).lower() for label in labels} or "needs-escalation" in {str(label).lower() for label in labels}):
             selected.append(item_data)
 
     def priority_key(item):
