@@ -14,7 +14,7 @@ docs/*
 scripts/*
 
 # Dispatch workflow scripts.
-!scripts/mission_control_reporter.py
+!scripts/dispatch_reporter.py
 !scripts/issue_lane_judge.py
 !scripts/project_groom.py
 !scripts/project_backlog_sync.py

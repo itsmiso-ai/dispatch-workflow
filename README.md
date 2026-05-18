@@ -40,7 +40,7 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `project_groom.py` | Route issues to Ready/Backlog/lanes |
 | `wishlist_read_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=normal`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
 | `wishlist_read_gpt_audit_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=escalated`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
-| `mission_control_reporter.py` | Report agent runs to Dispatch (prefer `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN`; falls back to `MISSION_CONTROL_URL`/`MISSION_CONTROL_AGENT_TOKEN`) |
+| `dispatch_reporter.py` | Report agent runs to Dispatch (prefer `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN`; falls back to `MISSION_CONTROL_URL`/`MISSION_CONTROL_AGENT_TOKEN`) |
 | `context-budget.py` | Audit OpenClaw context token overhead |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Sync session summaries to wiki |
