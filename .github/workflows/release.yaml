@@ -26,6 +26,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Check APP_VERSION matches release tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          TAG="${TAG#v}"
+          VERSION=$(grep 'APP_VERSION' app.py | grep -oP 'or "\K[^"]+')
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "ERROR: APP_VERSION ($VERSION) does not match release tag ($TAG)"
+            echo "The APP_VERSION constant in app.py must be bumped to $TAG before releasing."
+            exit 1
+          fi
+          echo "OK: APP_VERSION ($VERSION) matches release tag ($TAG)"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 

@@ -338,6 +338,8 @@ docker run -p 5000:5000 -v ./images:/data miso-gallery:latest
 
 Use the **Manual Release** GitHub Actions workflow and enter a version like `0.4.6`. It normalizes `v0.4.6` to `0.4.6`, updates the in-app version string in `app.py`, pushes that bump to `main` through the configured bot identity, creates the plain-semver tag, and creates the GitHub release with generated notes.
 
+The **Build** workflow (triggered by a published release) validates that `APP_VERSION` in `app.py` matches the release tag before building Docker images. If they diverge, the build fails to prevent releasing a binary with an incorrect version string.
+
 ## License
 
 MIT
