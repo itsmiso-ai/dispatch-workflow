@@ -27,7 +27,7 @@ The following are intentionally excluded and must never be committed:
 
 ## Relationship to Dispatch App
 
-The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer. 
+The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer.
 
 ## Scripts
 
@@ -38,25 +38,19 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `pr_fix_queue.py` | PR review-fix queue management |
 | `project_backlog_sync.py` | Sync GitHub issues to Vibe Coding project |
 | `project_groom.py` | Route issues to Ready/Backlog/lanes |
-| `wishlist_read_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=normal`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
-| `wishlist_read_gpt_audit_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=escalated`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
-| `mission_control_reporter.py` | Report agent runs to Dispatch (prefer `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN`; falls back to `MISSION_CONTROL_URL`/`MISSION_CONTROL_AGENT_TOKEN`) |
+| `mission_control_reporter.py` | Report agent runs to Dispatch |
 | `context-budget.py` | Audit OpenClaw context token overhead |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Sync session summaries to wiki |
 
-## Worker Prompt Migration (Issue #70)
+## Worker Queue APIs
 
-Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Dispatch queue APIs:
+Workers consume work from Dispatch queue APIs:
 
 - **Normal lane:** `GET /api/agents/{agentName}/queue?lane=normal`
 - **Escalated lane:** `GET /api/agents/{agentName}/queue?lane=escalated`
 
-Workers claim work via `POST /api/issues/claim` and update status via `POST /api/issues/move`. No GitHub Projects GraphQL mutations are used in worker prompts.
-
-Affected cron jobs:
-- `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
-- `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses Dispatch escalated queue
+Workers claim work via `POST /api/issues/claim` and update status via `POST /api/issues/move`.
 
 ## Security
 
