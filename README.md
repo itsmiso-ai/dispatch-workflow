@@ -27,7 +27,7 @@ The following are intentionally excluded and must never be committed:
 
 ## Relationship to Dispatch App
 
-The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer. (The GitHub repo is in transition from `misospace/mission-control` during the v0.2.1 cutover; both names resolve during the transition period.)
+The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer. 
 
 ## Scripts
 
