@@ -1,14 +1,14 @@
-# Mission Control Workflow Scripts
+# Dispatch Workflow Scripts
 
-Private repo tracking Mission Control workflow scripts for the Saffron agent workspace.
+Private repo tracking Dispatch workflow scripts for the Saffron agent workspace.
 
 **Owner:** Saffron (OpenClaw agent) — `itsmiso-ai` account
 
-**Purpose:** Version-controlled scripts and workflow documentation for the Mission Control integration layer.
+**Purpose:** Version-controlled scripts and workflow documentation for the Dispatch integration layer.
 
 ## Scope
 
-This repo tracks Mission Control workflow files from the Saffron agent workspace:
+This repo tracks Dispatch workflow files from the Saffron agent workspace:
 - Python scripts for heartbeat grooming, lane judging, backlog syncing
 - Bash/shell utility scripts
 - Workflow documentation and runbooks
@@ -23,11 +23,11 @@ The following are intentionally excluded and must never be committed:
 - **github_followup_watcher.json** — Runtime watch state
 - Any file containing tokens, secrets, or credentials
 - Any OpenClaw agent config, session, or memory files
-- home-ops or mission-control app code
+- home-ops or dispatch app code
 
-## Relationship to Mission Control App
+## Relationship to Dispatch App
 
-The Mission Control application lives separately at `misospace/mission-control`. This repo contains only the agent-side workflow scripts that interact with Mission Control as a consumer.
+The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer. (The GitHub repo is in transition from `misospace/mission-control` during the v0.2.1 cutover; both names resolve during the transition period.)
 
 ## Scripts
 
@@ -38,16 +38,16 @@ The Mission Control application lives separately at `misospace/mission-control`.
 | `pr_fix_queue.py` | PR review-fix queue management |
 | `project_backlog_sync.py` | Sync GitHub issues to Vibe Coding project |
 | `project_groom.py` | Route issues to Ready/Backlog/lanes |
-| `wishlist_read_board.py` | **DEPRECATED** — Workers now consume Mission Control queue APIs directly (`GET /api/agents/{agentName}/queue?lane=normal`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
-| `wishlist_read_gpt_audit_board.py` | **DEPRECATED** — Workers now consume Mission Control queue APIs directly (`GET /api/agents/{agentName}/queue?lane=escalated`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
-| `mission_control_reporter.py` | Report agent runs to Mission Control |
+| `wishlist_read_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=normal`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
+| `wishlist_read_gpt_audit_board.py` | **DEPRECATED** — Workers now consume Dispatch queue APIs directly (`GET /api/agents/{agentName}/queue?lane=escalated`) instead of reading GitHub Project boards. Kept for reference/backwards compatibility. |
+| `mission_control_reporter.py` | Report agent runs to Dispatch (prefer `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN`; falls back to `MISSION_CONTROL_URL`/`MISSION_CONTROL_AGENT_TOKEN`) |
 | `context-budget.py` | Audit OpenClaw context token overhead |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Sync session summaries to wiki |
 
 ## Worker Prompt Migration (Issue #70)
 
-Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Mission Control queue APIs:
+Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Dispatch queue APIs:
 
 - **Normal lane:** `GET /api/agents/{agentName}/queue?lane=normal`
 - **Escalated lane:** `GET /api/agents/{agentName}/queue?lane=escalated`
@@ -55,8 +55,8 @@ Worker cron prompts no longer reference GitHub Project boards. Instead, they con
 Workers claim work via `POST /api/issues/claim` and update status via `POST /api/issues/move`. No GitHub Projects GraphQL mutations are used in worker prompts.
 
 Affected cron jobs:
-- `(Saffron): 35B Wishlist Chip` — normal lane, uses MC normal queue
-- `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses MC escalated queue
+- `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
+- `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses Dispatch escalated queue
 
 ## Security
 
