@@ -40,7 +40,7 @@ COLUMN_NAMES = {v: k for k, v in COLUMNS.items()}
 TRACKED_REPOS = [
     "misospace/miso-chat",
     "misospace/miso-gallery",
-    "misospace/mission-control",
+    "misospace/dispatch",
     "misospace/pr-reviewer-action",
     "misospace/windowstead",
 ]

@@ -13,7 +13,7 @@ docs/*
 !scripts/
 scripts/*
 
-# Mission Control workflow scripts.
+# Dispatch workflow scripts.
 !scripts/mission_control_reporter.py
 !scripts/issue_lane_judge.py
 !scripts/project_groom.py

@@ -16,7 +16,7 @@ PROJECT_ID = "PVT_kwHOAsG-YM4BTyY3"
 REPOS = [
     "misospace/miso-chat",
     "misospace/miso-gallery",
-    "misospace/mission-control",
+    "misospace/dispatch",
     "misospace/pr-reviewer-action",
     "misospace/windowstead",
 ]
