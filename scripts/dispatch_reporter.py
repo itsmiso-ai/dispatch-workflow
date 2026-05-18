@@ -2,11 +2,11 @@
 """Best-effort reporter for Dispatch agent run events.
 
 Usage:
-    python3 mission_control_reporter.py --started-at ISO8601 [--finished-at ISO8601]
-                                         [--status ok|warning|error]
-                                         [--summary TEXT]
-                                         [--touched URL [URL ...]]
-                                         [--run-type RUN_TYPE]
+    python3 dispatch_reporter.py --started-at ISO8601 [--finished-at ISO8601]
+                                  [--status ok|warning|error]
+                                  [--summary TEXT]
+                                  [--touched URL [URL ...]]
+                                  [--run-type RUN_TYPE]
 
 Exit code: 0 even on failure (best-effort reporting).
 """
@@ -35,14 +35,14 @@ def report_to_dispatch(
     run_type: str = "heartbeat",
 ) -> bool:
     """POST an agent-run event to Dispatch. Returns True on success."""
-    url = os.environ.get("DISPATCH_URL") or os.environ.get("MISSION_CONTROL_URL")
-    token = os.environ.get("DISPATCH_AGENT_TOKEN") or os.environ.get("MISSION_CONTROL_AGENT_TOKEN")
+    url = os.environ.get("DISPATCH_URL")
+    token = os.environ.get("DISPATCH_AGENT_TOKEN")
 
     if not url:
-        log("[dispatch-reporter] DISPATCH_URL not set (checked DISPATCH_URL, fallback MISSION_CONTROL_URL) — skipping report")
+        log("[dispatch-reporter] DISPATCH_URL not set — skipping report")
         return False
     if not token:
-        log("[dispatch-reporter] DISPATCH_AGENT_TOKEN not set (checked DISPATCH_AGENT_TOKEN, fallback MISSION_CONTROL_AGENT_TOKEN) — skipping report")
+        log("[dispatch-reporter] DISPATCH_AGENT_TOKEN not set — skipping report")
         return False
 
     payload = {
