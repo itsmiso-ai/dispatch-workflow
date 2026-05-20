@@ -246,7 +246,7 @@ Miso Gallery supports separate read and write API keys:
 
 ### Threat Model
 
-Webhook tasks allow authenticated API callers to execute arbitrary shell commands on the gallery host. This is a **high-privilege operation** with the following risks:
+Webhook tasks allow authenticated write-scoped API callers to execute arbitrary shell commands on the gallery host. This is a **high-privilege operation** with the following risks:
 
 - A compromised API key can execute any command as the gallery process user.
 - Command injection via untrusted payload parameters (e.g., image paths in task templates).
@@ -258,6 +258,7 @@ Webhook tasks allow authenticated API callers to execute arbitrary shell command
 |---|---|---|
 | `WEBHOOK_ENABLED` | `false` | Disable by default; enable only if needed |
 | `WEBHOOK_TASK_TIMEOUT` | `30` | Max seconds per task (range: 1–600) |
+| `LLM_WRITE_API_KEYS` | unique high-entropy tokens | Required for `/api/llm/task/run`; read-scoped keys are rejected |
 
 ### Enabling Tasks
 
