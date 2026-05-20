@@ -2,7 +2,7 @@
 """Persistent review-fix queue for cron-authored PRs.
 
 The heartbeat follow-up watcher enqueues open PRs that need follow-up. The
-wishlist workers consume queued PRs before selecting new project-board work.
+wishlist workers consume queued PRs before selecting new Dispatch queue work.
 
 Lane compatibility:
   - "escalated" is the canonical lane name (replaces legacy "gpt").
