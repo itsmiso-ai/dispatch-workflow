@@ -1,149 +1,56 @@
 #!/usr/bin/env python3
-"""Read Ready normal-lane items from the Vibe Coding Backlog project.
+"""Read normal-lane work from Dispatch.
 
-Used by the wishlist chipping cron to get current work items.
-Heartbeat/groom owns state reconciliation; this selector intentionally only
-returns Ready items for the cron to consume.
-
-Usage:
-    python3 wishlist_read_board.py
+Legacy filename retained for compatibility. GitHub Projects are deprecated and
+must not be queried.
 """
-import os
+
+from __future__ import annotations
+
 import json
-import subprocess
-
-GH = os.environ.get("GH", "/home/node/.local/bin/gh")
-PROJECT_ID = "PVT_kwHOAsG-YM4BTyY3"
-
-
-def gh(args: list) -> subprocess.CompletedProcess:
-    cmd = [GH] + args
-    return subprocess.run(cmd, capture_output=True, text=True)
+import os
+import sys
+import urllib.request
 
 
-def main():
-    query = """
-{
-  node(id: "%s") {
-    ... on ProjectV2 {
-      items(first: 100) {
-        nodes {
-          id
-          fieldValues(first: 5) {
-            nodes {
-              __typename
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name
-              }
-            }
-          }
-          content {
-            ... on Issue {
-              id
-              number
-              title
-              state
-              repository {
-                nameWithOwner
-              }
-              labels(first: 20) {
-                nodes {
-                  name
-                }
-              }
-              body
-            }
-          }
-        }
-      }
-    }
-  }
-}
-""" % PROJECT_ID
-
-    result = gh(["api", "graphql", "--field", f"query={query}"])
-    if result.returncode != 0:
-        print("ERROR: GraphQL query failed")
-        print(result.stderr)
+def dispatch_queue(lane: str) -> list[dict]:
+    url = os.environ.get("DISPATCH_URL", "http://dispatch.llm:3000").rstrip("/")
+    token = os.environ.get("DISPATCH_AGENT_TOKEN", "")
+    if not token:
+        print("ERROR: DISPATCH_AGENT_TOKEN not set")
         return []
+    req = urllib.request.Request(
+        f"{url}/api/agents/saffron/queue?lane={lane}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data if isinstance(data, list) else []
 
+
+def main() -> int:
     try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print("ERROR: Could not parse GraphQL response")
-        print(result.stdout[:500])
-        return []
-
-    items = data.get("data", {}).get("node", {}).get("items", {}).get("nodes", [])
-    ready_items = []
+        items = dispatch_queue("normal")
+    except Exception as e:
+        print(f"ERROR: Dispatch normal queue read failed: {e}")
+        return 1
 
     for item in items:
-        content = item.get("content")
-        if not content:
-            continue
+        print(json.dumps({
+            "issue_id": item.get("issueId"),
+            "number": item.get("number"),
+            "title": item.get("title"),
+            "repo": item.get("repoFullName"),
+            "labels": item.get("labels") or [],
+            "status": item.get("status"),
+            "lane": item.get("lane"),
+            "url": item.get("url"),
+        }))
 
-        field_values = item.get("fieldValues", {}).get("nodes", [])
-        statuses = [
-            fv.get("name")
-            for fv in field_values
-            if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue"
-        ]
-        status = None
-        for s in statuses:
-            if s == "Ready":
-                status = s
-                break
-        if not status:
-            continue
-
-        labels = [lbl.get("name", "") for lbl in content.get("labels", {}).get("nodes", [])]
-        label_set = {label.lower() for label in labels}
-        title = content.get("title") or ""
-        title_l = title.lower()
-
-        # Heartbeat/groom owns lane assignment. This selector only consumes the
-        # already-curated normal Ready lane.
-        if (
-            title_l.startswith(("weekly tech debt audit:", "tech debt audit:"))
-            or "weekly tech debt audit:" in title_l
-            or "[audit]" in title_l
-            or "audit" in label_set
-            or "umbrella" in label_set
-            or "needs-gpt" in label_set
-        ):
-            continue
-
-        ready_items.append({
-            "item_id": item["id"],
-            "issue_id": content.get("id"),
-            "number": content.get("number"),
-            "title": content.get("title"),
-            "repo": content.get("repository", {}).get("nameWithOwner"),
-            "labels": labels,
-            "status": status,
-        })
-
-    # Sort ready items by priority: bug > p0 > p1 > oldest
-    def priority_key(item):
-        labels = set(item["labels"])
-        if "bug" in labels:
-            prio = 0
-        elif "p0" in labels:
-            prio = 1
-        elif "p1" in labels:
-            prio = 2
-        else:
-            prio = 3
-        return (prio, item["number"])
-
-    ready_items.sort(key=priority_key)
-
-    for item in ready_items:
-        print(json.dumps(item))
-
-    if not ready_items:
+    if not items:
         print("Pipeline is clear.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
