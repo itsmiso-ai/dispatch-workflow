@@ -92,6 +92,37 @@ def test_llm_tags_and_task_run(monkeypatch, tmp_path):
     )
     assert task.status_code == 200
     assert task.get_json()["stdout"].strip() == "hello"
+
+
+def test_read_key_rejected_from_task_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+    monkeypatch.setenv("WEBHOOK_TASK_ECHO", "python3 -c \"import sys;print(sys.argv[1])\" {params.value}")
+    client, _ = build_client(
+        monkeypatch,
+        tmp_path,
+        api_keys=None,
+        extra_env={
+            "LLM_READ_API_KEYS": "read-only-key",
+            "LLM_WRITE_API_KEYS": "write-secret-key",
+        },
+    )
+
+    read_task = client.post(
+        "/api/llm/task/run",
+        json={"task": "echo", "params": {"value": "hello"}},
+        headers=auth_header("read-only-key"),
+    )
+    assert read_task.status_code == 401
+
+    write_task = client.post(
+        "/api/llm/task/run",
+        json={"task": "echo", "params": {"value": "hello"}},
+        headers=auth_header("write-secret-key"),
+    )
+    assert write_task.status_code == 200
+    assert write_task.get_json()["stdout"].strip() == "hello"
+
+
 def test_write_key_can_access_read_endpoints(monkeypatch, tmp_path):
     """Write-scoped keys should be accepted on read endpoints."""
     client, _ = build_client(monkeypatch, tmp_path, api_keys="write-only-key")

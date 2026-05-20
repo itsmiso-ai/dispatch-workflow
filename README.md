@@ -188,7 +188,7 @@ This allows sharing images while protecting the gallery UI.
 
 Miso Gallery includes a JSON API intended for LLM agents and other machine-to-machine clients. The primary purpose is to let an external LLM client inspect and manage gallery state: list/search media, read metadata, tag, delete, bulk-delete, and deduplicate images.
 
-Enable the API by setting one or more comma-separated API keys:
+Enable the API by setting one or more comma-separated API keys. Prefer separate read and write keys for new deployments; `LLM_API_KEYS` remains supported as a legacy all-purpose key.
 
 ```bash
 docker run -d --name miso-gallery \
@@ -196,14 +196,15 @@ docker run -d --name miso-gallery \
   -v /path/to/images:/data \
   -e SECRET_KEY=your-session-secret \
   -e ADMIN_PASSWORD=your-password \
-  -e LLM_API_KEYS=agent-key-1,agent-key-2 \
+  -e LLM_READ_API_KEYS=gallery-read-key \
+  -e LLM_WRITE_API_KEYS=gallery-write-key \
   ghcr.io/misospace/miso-gallery:latest
 ```
 
 Authenticate each request with a Bearer token:
 
 ```bash
-curl -H "Authorization: Bearer agent-key-1" \
+curl -H "Authorization: Bearer gallery-read-key" \
   http://localhost:5000/api/llm/images
 ```
 
@@ -221,7 +222,7 @@ LLM API endpoints are token-authenticated and do not require CSRF tokens. Existi
 Example:
 
 ```bash
-curl -H "Authorization: Bearer agent-key-1" \
+curl -H "Authorization: Bearer gallery-read-key" \
   "http://localhost:5000/api/llm/images?q=cat"
 ```
 
@@ -259,7 +260,7 @@ Delete example:
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer agent-key-1" \
+  -H "Authorization: Bearer gallery-write-key" \
   -H "Content-Type: application/json" \
   -d '{"rel_path":"cats/cat.jpg"}' \
   http://localhost:5000/api/llm/delete
@@ -269,7 +270,7 @@ Dedup dry-run example:
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer agent-key-1" \
+  -H "Authorization: Bearer gallery-write-key" \
   -H "Content-Type: application/json" \
   -d '{}' \
   http://localhost:5000/api/llm/dedup
@@ -286,7 +287,8 @@ docker run -d --name miso-gallery \
   -p 5000:5000 \
   -v /path/to/images:/data \
   -e SECRET_KEY=your-session-secret \
-  -e LLM_API_KEYS=agent-key-1 \
+  -e LLM_READ_API_KEYS=gallery-read-key \
+  -e LLM_WRITE_API_KEYS=gallery-write-key \
   -e WEBHOOK_ENABLED=true \
   -e 'WEBHOOK_TASK_GENERATE=python3 /data/scripts/generate.py {params.prompt}' \
   ghcr.io/misospace/miso-gallery:latest
@@ -296,13 +298,13 @@ Run a configured task:
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer agent-key-1" \
+  -H "Authorization: Bearer gallery-write-key" \
   -H "Content-Type: application/json" \
   -d '{"task":"generate","params":{"prompt":"a cozy bowl of miso soup"}}' \
   http://localhost:5000/api/llm/task/run
 ```
 
-Task commands run from `DATA_FOLDER`, scalar params are shell-quoted, and the timeout is controlled by `WEBHOOK_TASK_TIMEOUT` with a default of 30 seconds.
+Task execution requires a write-scoped LLM API key. Read-scoped keys can browse gallery metadata but cannot run configured server-side tasks. Task commands run from `DATA_FOLDER`, scalar params are shell-quoted, and the timeout is controlled by `WEBHOOK_TASK_TIMEOUT` with a default of 30 seconds.
 
 ## Development
 

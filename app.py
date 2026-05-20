@@ -1921,7 +1921,7 @@ def llm_dedup():
 
 
 @app.route("/api/llm/task/run", methods=["POST"])
-@require_api_key_with_scope("read")
+@require_api_key_with_scope("write")
 @rate_limit(max_requests=10, window=60)
 def llm_task_run():
     body, status = run_configured_task(request.get_json(silent=True) or {})
