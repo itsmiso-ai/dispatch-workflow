@@ -28,13 +28,17 @@ WISHLIST_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
 GPT_AUDIT_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
 
-TRACKED_REPOS = [
+DEFAULT_TRACKED_REPOS = [
     "misospace/miso-chat",
     "misospace/miso-gallery",
     "misospace/dispatch",
     "misospace/pr-reviewer-action",
     "misospace/windowstead",
 ]
+
+# Populated at runtime from Dispatch when available. The default list is a
+# safety fallback only; Dispatch is the canonical repo inventory.
+TRACKED_REPOS = DEFAULT_TRACKED_REPOS.copy()
 
 GPT_AUDIT_LABELS = {"audit", "needs-gpt", "needs-escalation"}
 GPT_AUDIT_TITLE_PREFIXES = ("weekly tech debt audit:", "tech debt audit:")
@@ -60,13 +64,20 @@ def dispatch_token() -> str:
     return os.environ.get("DISPATCH_AGENT_TOKEN", "")
 
 
-def dispatch_request(path: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 20) -> Any:
+def dispatch_request(
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 20,
+    require_token: bool = True,
+) -> Any:
     token = dispatch_token()
-    if not token:
+    if require_token and not token:
         raise RuntimeError("DISPATCH_AGENT_TOKEN not set")
 
     data = None
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -82,6 +93,39 @@ def dispatch_request(path: str, *, method: str = "GET", payload: dict[str, Any] 
         if not raw:
             return None
         return json.loads(raw)
+
+
+def get_tracked_repos() -> list[str]:
+    """Return Dispatch's enabled tracked repos, with local defaults as fallback."""
+    try:
+        data = dispatch_request(
+            "/api/automation/repos/tracked",
+            require_token=False,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"  [!] Dispatch tracked repo lookup failed; using fallback list: {e}", file=sys.stderr)
+        return DEFAULT_TRACKED_REPOS.copy()
+
+    if not isinstance(data, list):
+        print("  [!] Dispatch tracked repo response was not a list; using fallback list", file=sys.stderr)
+        return DEFAULT_TRACKED_REPOS.copy()
+
+    repos: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if item.get("enabled") is False:
+            continue
+        full_name = item.get("fullName")
+        if isinstance(full_name, str) and "/" in full_name:
+            repos.append(full_name)
+
+    if not repos:
+        print("  [!] Dispatch tracked repo response was empty; using fallback list", file=sys.stderr)
+        return DEFAULT_TRACKED_REPOS.copy()
+
+    return sorted(dict.fromkeys(repos))
 
 
 def dispatch_sync() -> bool:
@@ -437,9 +481,18 @@ def manage_crons() -> tuple[int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Dispatch-first grooming for Saffron queues")
     parser.add_argument("--no-sync", action="store_true", help="Skip Dispatch issue sync before grooming")
+    parser.add_argument("--list-tracked-repos", action="store_true", help="Print enabled tracked repos from Dispatch and exit")
     args = parser.parse_args()
 
+    global TRACKED_REPOS
+    TRACKED_REPOS = get_tracked_repos()
+
+    if args.list_tracked_repos:
+        print("\n".join(TRACKED_REPOS))
+        return 0
+
     print("[*] Grooming Dispatch queues...")
+    print(f"[*] Tracked repos from Dispatch: {len(TRACKED_REPOS)}")
 
     if not args.no_sync:
         print("[*] Syncing GitHub issues into Dispatch...")
