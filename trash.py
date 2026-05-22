@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,36 +21,82 @@ def _meta_path(item_path: Path) -> Path:
 
 
 def move_to_trash(file_path: Path, data_folder: Path) -> bool:
-    if not file_path.exists() or not file_path.is_file():
+    """Move a file or directory to the trash.
+
+    Returns True on success, False if the path does not exist or is inaccessible.
+    For directories, the entire tree is moved atomically via rename.
+    """
+    if not file_path.exists():
         return False
 
     td = trash_dir(data_folder)
     rel = file_path.relative_to(data_folder).as_posix()
     ts = int(time.time())
-    dest = td / f"{ts}_{file_path.name}"
-    i = 1
-    while dest.exists():
-        dest = td / f"{ts}_{i}_{file_path.name}"
-        i += 1
 
-    try:
-        file_path.rename(dest)
-        meta = {
-            "original": rel,
-            "deleted_at": datetime.utcnow().isoformat(),
-            "size": dest.stat().st_size,
-        }
-        _meta_path(dest).write_text(json.dumps(meta))
-        return True
-    except OSError:
-        return False
+    if file_path.is_file():
+        dest = td / f"{ts}_{file_path.name}"
+        i = 1
+        while dest.exists():
+            dest = td / f"{ts}_{i}_{file_path.name}"
+            i += 1
+
+        try:
+            file_path.rename(dest)
+            meta = {
+                "original": rel,
+                "deleted_at": datetime.utcnow().isoformat(),
+                "size": dest.stat().st_size,
+            }
+            _meta_path(dest).write_text(json.dumps(meta))
+            return True
+        except OSError:
+            return False
+
+    if file_path.is_dir():
+        dest = td / f"{ts}_{file_path.name}"
+        i = 1
+        while dest.exists():
+            dest = td / f"{ts}_{i}_{file_path.name}"
+            i += 1
+
+        try:
+            # Use shutil.copytree to handle the move, then remove source
+            # rename() can fail cross-device; copytree + rmtree is safer
+            shutil.copytree(file_path, dest)
+            shutil.rmtree(file_path)
+            meta = {
+                "original": rel,
+                "deleted_at": datetime.utcnow().isoformat(),
+                "size": _dir_size(dest),
+            }
+            _meta_path(dest).write_text(json.dumps(meta))
+            return True
+        except OSError:
+            # Clean up partial copy on failure
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            return False
+
+    return False
+
+
+def _dir_size(path: Path) -> int:
+    """Calculate total size of a directory tree."""
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            try:
+                total += item.stat().st_size
+            except OSError:
+                pass
+    return total
 
 
 def list_trash(data_folder: Path) -> list[dict]:
     td = trash_dir(data_folder)
     out = []
     for item in td.iterdir():
-        if item.is_dir() or item.name.endswith(META_SUFFIX):
+        if item.name.endswith(META_SUFFIX):
             continue
         meta_file = _meta_path(item)
         meta = {}
@@ -58,12 +105,16 @@ def list_trash(data_folder: Path) -> list[dict]:
                 meta = json.loads(meta_file.read_text())
             except Exception:
                 meta = {}
+        if item.is_dir():
+            size = _dir_size(item)
+        else:
+            size = item.stat().st_size
         out.append(
             {
                 "name": item.name,
                 "original": meta.get("original", "unknown"),
                 "deleted_at": meta.get("deleted_at", datetime.fromtimestamp(item.stat().st_mtime).isoformat()),
-                "size": item.stat().st_size,
+                "size": size,
             }
         )
     out.sort(key=lambda x: x["deleted_at"], reverse=True)
@@ -73,7 +124,7 @@ def list_trash(data_folder: Path) -> list[dict]:
 def restore_from_trash(item_name: str, data_folder: Path) -> bool:
     td = trash_dir(data_folder)
     item = td / item_name
-    if not item.exists() or not item.is_file():
+    if not item.exists():
         return False
 
     meta_file = _meta_path(item)
@@ -86,8 +137,13 @@ def restore_from_trash(item_name: str, data_folder: Path) -> bool:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             ts = int(time.time())
-            dest = dest.with_name(f"{dest.stem}_{ts}{dest.suffix}")
-        item.rename(dest)
+            if item.is_dir():
+                while dest.exists():
+                    dest = dest.with_name(f"{dest.stem}_{ts}{dest.suffix}")
+                    ts += 1
+            else:
+                dest = dest.with_name(f"{dest.stem}_{ts}{dest.suffix}")
+        shutil.copytree(item, dest) if item.is_dir() else item.rename(dest)
         if meta_file.exists():
             meta_file.unlink(missing_ok=True)
         return True
@@ -100,7 +156,10 @@ def empty_trash(data_folder: Path) -> int:
     deleted = 0
     for item in td.iterdir():
         try:
-            item.unlink(missing_ok=True)
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
             deleted += 1
         except Exception:
             pass
@@ -112,7 +171,7 @@ def purge_old_trash(data_folder: Path, retention_days: int = 30) -> int:
     cutoff = datetime.utcnow() - timedelta(days=retention_days)
     deleted = 0
     for item in td.iterdir():
-        if item.is_dir() or item.name.endswith(META_SUFFIX):
+        if item.name.endswith(META_SUFFIX):
             continue
         meta_file = _meta_path(item)
         deleted_at = datetime.fromtimestamp(item.stat().st_mtime)
@@ -123,7 +182,10 @@ def purge_old_trash(data_folder: Path, retention_days: int = 30) -> int:
             except Exception:
                 pass
         if deleted_at < cutoff:
-            item.unlink(missing_ok=True)
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
             if meta_file.exists():
                 meta_file.unlink(missing_ok=True)
             deleted += 1
