@@ -129,17 +129,31 @@ def get_tracked_repos() -> list[str]:
 
 
 def dispatch_sync() -> bool:
+    result: Any
+    mode = "scheduled"
     try:
-        result = dispatch_request("/api/sync", method="POST", timeout=60)
+        result = dispatch_request("/api/sync/scheduled", method="POST", payload={}, timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            print(f"  [!] Dispatch scheduled sync failed: HTTP {e.code} {e.reason}")
+            return False
+        print("  [!] Dispatch scheduled sync endpoint returned 404; falling back to /api/sync")
+        mode = "legacy"
+        try:
+            result = dispatch_request("/api/sync", method="POST", payload={}, timeout=60)
+        except Exception as fallback_error:
+            print(f"  [!] Dispatch fallback sync failed: {fallback_error}")
+            return False
     except Exception as e:
-        print(f"  [!] Dispatch sync failed: {e}")
+        print(f"  [!] Dispatch scheduled sync failed: {e}")
         return False
 
     if isinstance(result, dict) and result.get("success"):
-        print(f"  Dispatch sync: syncedCount={result.get('syncedCount', '?')} repos={result.get('repos', '?')}")
+        issues = result.get("issues") or result
+        print(f"  Dispatch {mode} sync: syncedCount={issues.get('syncedCount', '?')} repos={issues.get('repos', '?')}")
         return True
 
-    print(f"  [!] Unexpected Dispatch sync response: {str(result)[:300]}")
+    print(f"  [!] Unexpected Dispatch {mode} sync response: {str(result)[:300]}")
     return False
 
 
@@ -193,6 +207,36 @@ def classify_dispatch_issue(issue_id: str, lane: str, reason: str, *, confidence
         return True
 
     print(f"      [!] Unexpected lane response: {str(result)[:300]}")
+    return False
+
+
+def set_dispatch_status(issue: dict[str, Any], status: str, reason: str) -> bool:
+    """Set issue lifecycle status through Dispatch, not direct GitHub label edits."""
+    issue_id = issue.get("id")
+    repo = repo_full_name(issue)
+    number = issue_number(issue)
+    if not issue_id or not repo or number is None:
+        return False
+
+    payload = {
+        "issueId": issue_id,
+        "repoFullName": repo,
+        "issueNumber": number,
+        "status": status,
+        "agentName": "saffron",
+        "actor": "saffron-groom",
+    }
+    try:
+        result = dispatch_request("/api/issues/status", method="POST", payload=payload, timeout=30)
+    except Exception as e:
+        print(f"      [!] Dispatch status update failed: {e}")
+        return False
+
+    if isinstance(result, dict) and result.get("success"):
+        print(f"      -> status/{status} ({reason})")
+        return True
+
+    print(f"      [!] Unexpected status response: {str(result)[:300]}")
     return False
 
 
@@ -300,11 +344,6 @@ def close_issue(repo: str, number: int, comment: str) -> bool:
     return r.returncode == 0
 
 
-def remove_label(repo: str, number: int, label: str) -> bool:
-    r = gh(["issue", "edit", str(number), "--repo", repo, "--remove-label", label], timeout=60)
-    return r.returncode == 0
-
-
 def judge_lane(repo: str, number: int) -> dict[str, Any] | None:
     r = subprocess.run(
         [sys.executable, LANE_JUDGE, repo, str(number)],
@@ -353,8 +392,14 @@ def set_wishlist_cron(enabled: bool) -> None:
     set_cron_enabled(WISHLIST_CRON_ID, enabled, "(Saffron): 35B Wishlist Chip")
 
 
-def cleanup_status_done_labels(issues: list[dict[str, Any]]) -> int:
-    removed = 0
+def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
+    """Open issues must not be Done. Move stale Done statuses back to Backlog.
+
+    Done is terminal and corresponds to a closed GitHub issue in Dispatch v0.3.
+    Use Dispatch's status API so GitHub labels and the Dispatch cache remain in
+    sync; do not edit status labels directly with `gh issue edit` here.
+    """
+    reconciled = 0
     for issue in issues:
         if not is_open(issue):
             continue
@@ -365,13 +410,12 @@ def cleanup_status_done_labels(issues: list[dict[str, Any]]) -> int:
         number = issue_number(issue)
         if not repo or number is None:
             continue
-        print(f"  [{repo} #{number}] removing stale status/done label (issue is still open)")
-        if remove_label(repo, number, "status/done"):
-            print("      -> removed status/done label")
-            removed += 1
+        print(f"  [{repo} #{number}] open issue has stale status/done")
+        if set_dispatch_status(issue, "backlog", "open issue cannot be Done"):
+            reconciled += 1
         else:
-            print("      -> failed to remove status/done label")
-    return removed
+            print("      -> failed to reconcile stale Done status")
+    return reconciled
 
 
 def close_resolved_issues(issues: list[dict[str, Any]], merged_prs: dict[str, dict[int, list[dict[str, Any]]]]) -> int:
@@ -495,7 +539,7 @@ def main() -> int:
     print(f"[*] Tracked repos from Dispatch: {len(TRACKED_REPOS)}")
 
     if not args.no_sync:
-        print("[*] Syncing GitHub issues into Dispatch...")
+        print("[*] Requesting Dispatch scheduled sync...")
         dispatch_sync()
 
     print("[*] Fetching Dispatch issues...")
@@ -519,12 +563,12 @@ def main() -> int:
     closed = close_resolved_issues(issues, merged_prs)
     print(f"  Closed issues: {closed}")
 
-    print("\n[*] Cleaning stale status/done labels from open GitHub issues...")
-    removed_labels = cleanup_status_done_labels(issues)
-    print(f"  Removed stale status/done labels: {removed_labels}")
+    print("\n[*] Reconciling stale Done statuses on open issues...")
+    reconciled_statuses = reconcile_stale_done_statuses(issues)
+    print(f"  Reconciled stale Done statuses: {reconciled_statuses}")
 
-    if closed or removed_labels:
-        print("\n[*] Re-syncing Dispatch after GitHub mutations...")
+    if closed or reconciled_statuses:
+        print("\n[*] Re-syncing Dispatch after GitHub/status mutations...")
         dispatch_sync()
         issues = get_all_dispatch_issues()
 
@@ -536,7 +580,7 @@ def main() -> int:
     normal_count, escalated_count = manage_crons()
 
     print("\nSummary:")
-    print(f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,{escalated_count} escalated_queue,{closed} closed,{removed_labels} stale_done_removed,{changed_lanes} lane_updates")
+    print(f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,{escalated_count} escalated_queue,{closed} closed,{reconciled_statuses} stale_done_reconciled,{changed_lanes} lane_updates")
     return 0
 
 

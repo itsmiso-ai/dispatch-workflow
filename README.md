@@ -19,7 +19,7 @@ The following are intentionally excluded and must never be committed:
 - **HEARTBEAT.md** — PVC-backed, not versioned
 - **cron/jobs.json** — Runtime state, managed by `openclaw cron`
 - **.state/*** — Runtime queue state and watch lists
-- **pr_fix_queue.json** — Ephemeral queue state
+- **pr_fix_queue.json** — Legacy local queue state; active PR-fix state lives in Dispatch
 - **github_followup_watcher.json** — Runtime watch state
 - Any file containing tokens, secrets, or credentials
 - Any OpenClaw agent config, session, or memory files
@@ -36,23 +36,39 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `github_followup_watcher.py` | Watch for PR/issue activity by itsmiso-ai |
 | `issue_lane_judge.py` | Classify issues into `normal`/`escalated`/`backlog` lanes |
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
-| `project_backlog_sync.py` | Compatibility wrapper for Dispatch `POST /api/sync`; no GitHub Projects access |
-| `project_groom.py` | Dispatch-first grooming: sync, stale label cleanup, lane classification, cron enablement |
+| `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`, fallback `/api/sync`); no GitHub Projects access |
+| `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
 | `wishlist_read_gpt_audit_board.py` | Compatibility reader for Dispatch escalated queue; does not query GitHub Projects |
-| `dispatch_reporter.py` | Report agent runs to Dispatch (prefer `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN`; falls back to `MISSION_CONTROL_URL`/`MISSION_CONTROL_AGENT_TOKEN`) |
+| `dispatch_reporter.py` | Report agent runs to Dispatch using only `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN` |
 | `context-budget.py` | Audit OpenClaw context token overhead |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Sync session summaries to wiki |
 
-## Worker Prompt Migration (Issue #70)
+## Dispatch v0.3 Worker Semantics
 
-Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Dispatch queue APIs:
+Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Dispatch queue APIs and Dispatch-owned lifecycle state:
 
 - **Normal lane:** `GET /api/agents/{agentName}/queue?lane=normal`
 - **Escalated lane:** `GET /api/agents/{agentName}/queue?lane=escalated`
 
-Workers claim work via `POST /api/issues/claim` and update status via `POST /api/issues/move`. GitHub Projects are fully deprecated and must not be queried or mutated by active workflow scripts.
+Workers claim work via `POST /api/issues/claim` and update lifecycle status via Dispatch status/lease/checkpoint APIs. GitHub Projects are fully deprecated and must not be queried or mutated by active workflow scripts.
+
+Board status contract:
+- `status/backlog` = needs triage/grooming, not ready for agents.
+- `status/ready` = groomed/actionable and available to claim.
+- `status/in-progress` = claimed or implementation started.
+- `status/in-review` = PR opened/checks/review pending while the issue remains open.
+- `status/done` = GitHub issue is closed/terminal only.
+
+Hard rule: opening or updating a PR is not Done. An open issue with an unmerged PR must be In Review, not Done.
+
+Work selection:
+- PR-fix queue items from Dispatch have precedence.
+- Workers consume exactly one actionable item per run.
+- Workers prefer Ready work and do not consume Backlog unless explicitly requested.
+- Renovate issues are excluded from agent queues unless explicitly requested.
+- If Dispatch returns active work, a checkpoint, or `nextAction`, workers obey that next action exactly, perform one bounded step, update Dispatch with the result/checkpoint, and stop.
 
 Affected cron jobs:
 - `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
