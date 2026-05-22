@@ -129,31 +129,21 @@ def get_tracked_repos() -> list[str]:
 
 
 def dispatch_sync() -> bool:
-    result: Any
-    mode = "scheduled"
     try:
         result = dispatch_request("/api/sync/scheduled", method="POST", payload={}, timeout=60)
     except urllib.error.HTTPError as e:
-        if e.code != 404:
-            print(f"  [!] Dispatch scheduled sync failed: HTTP {e.code} {e.reason}")
-            return False
-        print("  [!] Dispatch scheduled sync endpoint returned 404; falling back to /api/sync")
-        mode = "legacy"
-        try:
-            result = dispatch_request("/api/sync", method="POST", payload={}, timeout=60)
-        except Exception as fallback_error:
-            print(f"  [!] Dispatch fallback sync failed: {fallback_error}")
-            return False
+        print(f"  [!] Dispatch scheduled sync failed: HTTP {e.code} {e.reason}")
+        return False
     except Exception as e:
         print(f"  [!] Dispatch scheduled sync failed: {e}")
         return False
 
     if isinstance(result, dict) and result.get("success"):
         issues = result.get("issues") or result
-        print(f"  Dispatch {mode} sync: syncedCount={issues.get('syncedCount', '?')} repos={issues.get('repos', '?')}")
+        print(f"  Dispatch scheduled sync: syncedCount={issues.get('syncedCount', '?')} repos={issues.get('repos', '?')}")
         return True
 
-    print(f"  [!] Unexpected Dispatch {mode} sync response: {str(result)[:300]}")
+    print(f"  [!] Unexpected Dispatch scheduled sync response: {str(result)[:300]}")
     return False
 
 

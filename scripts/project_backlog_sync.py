@@ -28,7 +28,7 @@ def dispatch_token() -> str:
     return os.environ.get("DISPATCH_AGENT_TOKEN", "")
 
 
-def post_sync() -> tuple[str, dict]:
+def post_sync() -> dict:
     token = dispatch_token()
     if not token:
         raise RuntimeError("DISPATCH_AGENT_TOKEN not set")
@@ -38,23 +38,14 @@ def post_sync() -> tuple[str, dict]:
         "Content-Type": "application/json",
     }
 
-    for mode, path in (("scheduled", "/api/sync/scheduled"), ("legacy", "/api/sync")):
-        req = urllib.request.Request(
-            f"{dispatch_base_url()}{path}",
-            data=b"{}",
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return mode, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if mode == "scheduled" and e.code == 404:
-                print("WARN: Dispatch scheduled sync endpoint returned 404; falling back to /api/sync", file=sys.stderr)
-                continue
-            raise
-
-    raise RuntimeError("Dispatch sync failed: no endpoint available")
+    req = urllib.request.Request(
+        f"{dispatch_base_url()}/api/sync/scheduled",
+        data=b"{}",
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def main() -> int:
@@ -68,7 +59,7 @@ def main() -> int:
         return 0
 
     try:
-        mode, result = post_sync()
+        result = post_sync()
     except urllib.error.HTTPError as e:
         print(f"ERROR: Dispatch sync failed: HTTP {e.code} {e.reason}", file=sys.stderr)
         return 1
@@ -86,7 +77,7 @@ def main() -> int:
     results = issue_result.get("results") or []
     errors = [r for r in results if r.get("error")]
 
-    print(f"Dispatch {mode} sync: repos={repos} synced={synced} errors={len(errors)}")
+    print(f"Dispatch scheduled sync: repos={repos} synced={synced} errors={len(errors)}")
     for item in results:
         repo = item.get("repo", "?")
         count = item.get("synced", 0)

@@ -36,7 +36,7 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `github_followup_watcher.py` | Watch for PR/issue activity by itsmiso-ai |
 | `issue_lane_judge.py` | Classify issues into `normal`/`escalated`/`backlog` lanes |
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
-| `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`, fallback `/api/sync`); no GitHub Projects access |
+| `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
 | `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
 | `wishlist_read_gpt_audit_board.py` | Compatibility reader for Dispatch escalated queue; does not query GitHub Projects |
