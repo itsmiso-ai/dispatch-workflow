@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Dispatch issue sync wrapper.
+"""Dispatch scheduled issue sync wrapper.
 
 GitHub Projects are deprecated. This script name is kept only so existing
 heartbeat wiring continues to work while using Dispatch as the work system.
+Dispatch v0.3 owns primary cache freshness through the scheduled sync runner;
+heartbeat calls this as a best-effort freshness check, not as the source of
+truth for queue selection.
 
 Usage: python3 project_backlog_sync.py [--dry-run]
 """
@@ -25,36 +28,47 @@ def dispatch_token() -> str:
     return os.environ.get("DISPATCH_AGENT_TOKEN", "")
 
 
-def post_sync() -> dict:
+def post_sync() -> tuple[str, dict]:
     token = dispatch_token()
     if not token:
         raise RuntimeError("DISPATCH_AGENT_TOKEN not set")
 
-    req = urllib.request.Request(
-        f"{dispatch_base_url()}/api/sync",
-        data=b"{}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    for mode, path in (("scheduled", "/api/sync/scheduled"), ("legacy", "/api/sync")):
+        req = urllib.request.Request(
+            f"{dispatch_base_url()}{path}",
+            data=b"{}",
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return mode, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if mode == "scheduled" and e.code == 404:
+                print("WARN: Dispatch scheduled sync endpoint returned 404; falling back to /api/sync", file=sys.stderr)
+                continue
+            raise
+
+    raise RuntimeError("Dispatch sync failed: no endpoint available")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync GitHub issues into Dispatch")
+    parser = argparse.ArgumentParser(description="Run Dispatch scheduled sync")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without syncing")
     parser.add_argument("--repo", action="append", help="Ignored; Dispatch sync owns repo selection")
     args = parser.parse_args()
 
     if args.dry_run:
-        print("Dispatch sync dry-run: no changes made")
+        print("Dispatch scheduled sync dry-run: no changes made")
         return 0
 
     try:
-        result = post_sync()
+        mode, result = post_sync()
     except urllib.error.HTTPError as e:
         print(f"ERROR: Dispatch sync failed: HTTP {e.code} {e.reason}", file=sys.stderr)
         return 1
@@ -63,15 +77,16 @@ def main() -> int:
         return 1
 
     if not result.get("success"):
-        print(f"ERROR: Dispatch sync returned unsuccessful response: {str(result)[:300]}", file=sys.stderr)
+        print(f"ERROR: Dispatch scheduled sync returned unsuccessful response: {str(result)[:300]}", file=sys.stderr)
         return 1
 
-    repos = result.get("repos", 0)
-    synced = result.get("syncedCount", 0)
-    results = result.get("results") or []
+    issue_result = result.get("issues") or result
+    repos = issue_result.get("repos", 0)
+    synced = issue_result.get("syncedCount", 0)
+    results = issue_result.get("results") or []
     errors = [r for r in results if r.get("error")]
 
-    print(f"Dispatch sync: repos={repos} synced={synced} errors={len(errors)}")
+    print(f"Dispatch {mode} sync: repos={repos} synced={synced} errors={len(errors)}")
     for item in results:
         repo = item.get("repo", "?")
         count = item.get("synced", 0)
