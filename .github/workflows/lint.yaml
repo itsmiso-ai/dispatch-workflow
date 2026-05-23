@@ -35,11 +35,8 @@ jobs:
           python-version: '3.14'
           cache: 'pip'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install flake8
+      - name: Install Ruff
+        run: pip install ruff
 
-      - name: Run flake8
-        run: |
-          flake8 app.py --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Run Ruff (all Python files)
+        run: ruff check . --statistics

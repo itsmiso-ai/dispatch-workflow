@@ -31,11 +31,9 @@ jobs:
 
       - name: Audit requirements.txt
         run: pip-audit -r requirements.txt --format=spdx --output-file=${{ runner.temp }}/pip-audit-reqs.json
-        continue-on-error: true
 
       - name: Audit installed environment
         run: pip-audit --format=spdx --output-file=${{ runner.temp }}/pip-audit-env.json
-        continue-on-error: true
 
       - name: Upload audit results
         if: always()

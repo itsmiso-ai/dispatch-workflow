@@ -29,7 +29,6 @@ from auth import (
     is_auth_enabled,
     is_oidc_configured,
     oauth,
-    require_api_key,
     require_api_key_with_scope,
     require_auth,
     resolved_auth_mode,
@@ -37,6 +36,7 @@ from auth import (
 )
 from security import add_security_headers, csrf_token, is_safe_redirect_url, rate_limit, sanitize_path, validate_csrf
 from trash import empty_trash, list_trash, move_to_trash, purge_old_trash, restore_from_trash
+from health import health, storage_health, storage_health_read, storage_health_write
 
 DATA_FOLDER = Path(os.environ.get("DATA_FOLDER", "/data"))
 THUMBNAIL_CACHE_DIR = DATA_FOLDER / ".thumb_cache"
@@ -125,7 +125,6 @@ _FOLDER_COVER_CACHE: dict[str, tuple[float, str | None]] = {}
 # Bounded pagination defaults for gallery endpoints
 GALLERY_PAGE_DEFAULT = 50
 GALLERY_PAGE_MAX = 500
-import os
 GALLERY_SCAN_LIMIT = int(os.environ.get("GALLERY_SCAN_LIMIT", "5000"))
 
 
@@ -2046,8 +2045,6 @@ def oidc_callback():
         return redirect(url_for("login", error="oidc_failed", next=next_url))
 
 
-# Health routes
-from health import health, storage_health, storage_health_read, storage_health_write
 
 app.add_url_rule("/health", "health", health, methods=["GET"])
 app.add_url_rule("/health/storage", "storage_health", storage_health, methods=["GET"])

@@ -1,6 +1,5 @@
 import re
 
-import pytest
 
 from conftest import build_client
 

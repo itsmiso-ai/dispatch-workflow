@@ -13,15 +13,11 @@ Covers:
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
-from pathlib import Path
 
-import pytest
 
-from conftest import build_client, auth_header
+from conftest import build_client
 
 
 class TestMoveToTrashSingleFile:
@@ -198,7 +194,7 @@ class TestBulkDelete:
             login_resp.data.decode(),
         )
         assert csrf_match
-        auth_resp = client.post(
+        _ = client.post(
             "/auth",
             data={"password": "pass123", "next": "/", "csrf_token": csrf_match.group(1)},
             follow_redirects=False,
@@ -307,7 +303,7 @@ class TestConflictingNames:
         client, data_dir = build_client(monkeypatch, tmp_path)
 
         for i in range(2):
-            folder = data_dir / f"collision_test"
+            folder = data_dir / "collision_test"
             folder.mkdir()
             (folder / "file.jpg").write_bytes(b"fakesize")
             move_to_trash(folder, data_dir)
