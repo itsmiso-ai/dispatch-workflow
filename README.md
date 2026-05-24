@@ -70,6 +70,31 @@ Work selection:
 - Renovate issues are excluded from agent queues unless explicitly requested.
 - If Dispatch returns active work, a checkpoint, or `nextAction`, workers obey that next action exactly, perform one bounded step, update Dispatch with the result/checkpoint, and stop.
 
+## LLM-assisted backlog grooming
+
+`project_groom.py` has an explicit backlog investigation mode for issues that are stuck in `status/backlog`.
+
+Dry-run investigation, no mutations:
+
+```bash
+python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-max 5
+```
+
+Apply recommendations after reviewing the report:
+
+```bash
+python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-apply --groom-backlog-max 5
+```
+
+The grooming pass uses an LLM (`BACKLOG_GROOMING_MODEL`, default `openai-codex/gpt-5.5`) to read issue metadata and recent comments, then records a JSONL report under `.state/backlog_grooming_reports/`.
+
+Recommendations are one of:
+- `ready` — promote to `status/ready` and keep/use the recommended lane.
+- `escalated` — promote to `status/ready` on the escalated lane.
+- `decompose`, `needs-info`, `needs-human`, or `keep-backlog` — keep out of Ready and surface the reason/next action in the report.
+
+With `--groom-backlog-apply`, the script uses Dispatch APIs for status/lane updates and posts a guarded GitHub enrichment comment unless `--groom-backlog-no-comment` is set.
+
 Affected cron jobs:
 - `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
 - `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses Dispatch escalated queue

@@ -10,6 +10,7 @@ This script intentionally does not read or mutate GitHub Projects.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -44,6 +45,24 @@ GPT_AUDIT_LABELS = {"audit", "needs-gpt", "needs-escalation"}
 GPT_AUDIT_TITLE_PREFIXES = ("weekly tech debt audit:", "tech debt audit:")
 LANE_ALIASES = {"gpt": "escalated"}
 VALID_LANES = {"normal", "escalated", "backlog"}
+
+STATE_DIR = Path(os.environ.get("SAFFRON_STATE_DIR", Path.home() / ".openclaw" / "workspace-saffron" / ".state"))
+BACKLOG_GROOMING_STATE = STATE_DIR / "backlog_grooming.json"
+BACKLOG_GROOMING_REPORTS = STATE_DIR / "backlog_grooming_reports"
+BACKLOG_GROOMING_MARKER = "<!-- saffron-backlog-grooming -->"
+BACKLOG_GROOMING_MODEL = os.environ.get("BACKLOG_GROOMING_MODEL", "openai-codex/gpt-5.5")
+BACKLOG_GROOMING_COMMAND = os.environ.get("BACKLOG_GROOMING_COMMAND", "")
+
+BACKLOG_RECOMMENDATIONS = {
+    "ready",
+    "escalated",
+    "needs-human",
+    "needs-info",
+    "decompose",
+    "keep-backlog",
+}
+
+RENOVATE_TITLE_RE = re.compile(r"(?:dependency dashboard|^update (?:dependency|image|deps?)|renovate)", re.I)
 
 
 def normalize_lane(lane: str | None) -> str | None:
@@ -261,6 +280,421 @@ def issue_title(issue: dict[str, Any]) -> str:
 
 def issue_body(issue: dict[str, Any]) -> str:
     return str(issue.get("body") or "")
+
+
+def issue_status(issue: dict[str, Any]) -> str | None:
+    for label in issue.get("labels") or []:
+        label_s = str(label)
+        if label_s.startswith("status/"):
+            return label_s.lower()
+    return None
+
+
+def issue_url(issue: dict[str, Any]) -> str:
+    return str(issue.get("url") or "")
+
+
+def issue_updated_at(issue: dict[str, Any]) -> str:
+    return str(issue.get("updatedAt") or issue.get("updated_at") or "")
+
+
+def is_renovate_issue(issue: dict[str, Any]) -> bool:
+    labels = issue_labels(issue)
+    title = issue_title(issue)
+    return bool(RENOVATE_TITLE_RE.search(title)) or bool(labels & {"renovate", "dependencies", "automated"})
+
+
+def load_backlog_grooming_state() -> dict[str, Any]:
+    try:
+        return json.loads(BACKLOG_GROOMING_STATE.read_text())
+    except FileNotFoundError:
+        return {"issues": {}}
+    except Exception as e:
+        print(f"  [!] Could not read backlog grooming state: {e}")
+        return {"issues": {}}
+
+
+def save_backlog_grooming_state(state: dict[str, Any]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    BACKLOG_GROOMING_STATE.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def github_issue_comments(repo: str, number: int, limit: int = 8) -> list[dict[str, Any]]:
+    r = gh([
+        "api",
+        f"repos/{repo}/issues/{number}/comments",
+        "--paginate",
+        "--jq",
+        ".[] | {author:.user.login, createdAt:.created_at, body:.body}",
+    ], timeout=60)
+    if r.returncode != 0:
+        return []
+
+    comments: list[dict[str, Any]] = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            comments.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return comments[-limit:]
+
+
+def existing_grooming_comment(repo: str, number: int) -> bool:
+    comments = github_issue_comments(repo, number, limit=30)
+    return any(BACKLOG_GROOMING_MARKER in str(comment.get("body") or "") for comment in comments)
+
+
+def truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def build_backlog_grooming_prompt(issue: dict[str, Any], comments: list[dict[str, Any]]) -> str:
+    repo = repo_full_name(issue)
+    number = issue_number(issue)
+    labels = sorted(issue_labels(issue))
+    comments_text = "\n\n".join(
+        f"[{c.get('createdAt', '?')}] {c.get('author', '?')}:\n{truncate_text(str(c.get('body') or ''), 1200)}"
+        for c in comments
+    ) or "(no recent comments)"
+
+    return f"""You are grooming a GitHub issue for an autonomous engineering work queue.
+
+Return ONLY compact JSON with this exact schema:
+{{
+  "recommendation": "ready" | "escalated" | "needs-human" | "needs-info" | "decompose" | "keep-backlog",
+  "lane": "normal" | "escalated" | "backlog",
+  "confidence": "high" | "medium" | "low",
+  "reason": "short reason",
+  "summary": "operator-facing grooming summary",
+  "likelyFiles": ["path or area"],
+  "acceptanceCriteria": ["testable criterion"],
+  "validation": ["command/check to run"],
+  "nextAction": "specific next action if not ready, otherwise implementation start guidance"
+}}
+
+Rules:
+- "ready" means concrete, scoped, and safe for a normal worker to implement.
+- "escalated" means actionable but needs higher-judgment implementation/design/security/API review.
+- "decompose" means this is an umbrella/audit parent and should become smaller child issues.
+- "needs-info" means a human/repo owner must clarify missing requirements.
+- "needs-human" means policy/security/product judgment is required before agent work.
+- "keep-backlog" means intentionally parked; provide a concrete nextAction and why.
+- Do not choose ready if key acceptance criteria or scope are missing.
+- Do not choose keep-backlog silently; every non-ready answer needs a clear nextAction.
+- Prefer normal ready for bounded code/docs/test/CI fixes with enough details.
+
+Issue:
+repo: {repo}
+number: {number}
+url: {issue_url(issue)}
+title: {issue_title(issue)}
+state: {issue.get('state')}
+currentLane: {normalize_lane(issue.get('currentLane')) or 'normal'}
+status: {issue_status(issue) or 'no-status'}
+labels: {', '.join(labels) or '(none)'}
+updatedAt: {issue_updated_at(issue) or '(unknown)'}
+
+Body:
+{truncate_text(issue_body(issue), 7000) or '(no body)'}
+
+Recent comments:
+{truncate_text(comments_text, 5000)}
+"""
+
+
+def run_backlog_grooming_llm(prompt: str, timeout: int = 240) -> str:
+    if BACKLOG_GROOMING_COMMAND:
+        proc = subprocess.run(
+            BACKLOG_GROOMING_COMMAND,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            shell=True,
+            timeout=timeout,
+        )
+    else:
+        proc = subprocess.run(
+            [
+                "openclaw",
+                "capability",
+                "model",
+                "run",
+                "--gateway",
+                "--model",
+                BACKLOG_GROOMING_MODEL,
+                "--prompt",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "LLM command failed").strip()[:1000])
+    return proc.stdout.strip()
+
+
+def parse_backlog_grooming_result(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if match:
+        text = match.group(0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("LLM result was not a JSON object")
+
+    recommendation = str(data.get("recommendation") or "").strip().lower()
+    lane = normalize_lane(str(data.get("lane") or "")) or "backlog"
+    confidence = str(data.get("confidence") or "medium").strip().lower()
+    if recommendation not in BACKLOG_RECOMMENDATIONS:
+        raise ValueError(f"invalid recommendation: {recommendation!r}")
+    if lane not in VALID_LANES:
+        raise ValueError(f"invalid lane: {lane!r}")
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "medium"
+
+    data["recommendation"] = recommendation
+    data["lane"] = lane
+    data["confidence"] = confidence
+    for key in ["likelyFiles", "acceptanceCriteria", "validation"]:
+        value = data.get(key)
+        if not isinstance(value, list):
+            data[key] = []
+        else:
+            data[key] = [str(item) for item in value[:8]]
+    for key in ["reason", "summary", "nextAction"]:
+        data[key] = str(data.get(key) or "").strip()
+    return data
+
+
+def grooming_comment_body(result: dict[str, Any], *, applied: bool) -> str:
+    def bullet_list(items: list[str]) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else "- (none identified)"
+
+    applied_line = "Applied by Saffron groomer." if applied else "Dry-run/generated by Saffron groomer; no status changes applied."
+    return f"""{BACKLOG_GROOMING_MARKER}
+## Saffron backlog grooming note
+
+{applied_line}
+
+**Recommendation:** `{result['recommendation']}`  
+**Lane:** `{result['lane']}`  
+**Confidence:** `{result['confidence']}`
+
+**Reason:** {result.get('reason') or '(none)'}
+
+### Summary
+{result.get('summary') or '(none)'}
+
+### Likely files / areas
+{bullet_list(result.get('likelyFiles') or [])}
+
+### Acceptance criteria
+{bullet_list(result.get('acceptanceCriteria') or [])}
+
+### Validation
+{bullet_list(result.get('validation') or [])}
+
+### Next action
+{result.get('nextAction') or '(none)'}
+"""
+
+
+def comment_on_issue(repo: str, number: int, body: str) -> bool:
+    r = gh(["issue", "comment", "--repo", repo, str(number), "--body", body], timeout=60)
+    if r.returncode != 0:
+        print(f"      [!] failed to comment: {(r.stderr or r.stdout).strip()[:300]}")
+        return False
+    return True
+
+
+def backlog_grooming_candidates(issues: list[dict[str, Any]], *, include_no_status: bool) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for issue in issues:
+        if not is_open(issue):
+            continue
+        repo = repo_full_name(issue)
+        number = issue_number(issue)
+        if repo not in TRACKED_REPOS or number is None:
+            continue
+        if is_renovate_issue(issue):
+            continue
+        labels = issue_labels(issue)
+        if any(label.startswith("agent/") for label in labels):
+            continue
+        if issue_status(issue) in {"status/in-progress", "status/in-review", "status/done", "status/ready"}:
+            continue
+        status = issue_status(issue)
+        if status == "status/backlog" or (include_no_status and status is None):
+            candidates.append(issue)
+
+    def sort_key(issue: dict[str, Any]) -> tuple[int, int, str]:
+        labels = issue_labels(issue)
+        priority_rank = 9
+        for idx, priority in enumerate(["priority/p0", "priority/p1", "priority/p2", "priority/p3"]):
+            if priority in labels:
+                priority_rank = idx
+                break
+        status_rank = 0 if issue_status(issue) == "status/backlog" else 1
+        return (priority_rank, status_rank, issue_updated_at(issue))
+
+    return sorted(candidates, key=sort_key)
+
+
+def apply_backlog_grooming(issue: dict[str, Any], result: dict[str, Any], *, comment: bool) -> bool:
+    repo = repo_full_name(issue)
+    number = issue_number(issue)
+    issue_id = issue.get("id")
+    if not repo or number is None or not issue_id:
+        return False
+
+    ok = True
+    desired_lane = result["lane"]
+    current_lane = normalize_lane(issue.get("currentLane")) or "normal"
+    if desired_lane != current_lane:
+        ok = classify_dispatch_issue(
+            str(issue_id),
+            desired_lane,
+            result.get("reason") or "Backlog grooming classification",
+            confidence=result.get("confidence") or "medium",
+            model="saffron-backlog-groomer",
+        ) and ok
+
+    if result["recommendation"] in {"ready", "escalated"}:
+        ok = set_dispatch_status(issue, "ready", "LLM-assisted backlog grooming marked issue claimable") and ok
+
+    if comment:
+        ok = comment_on_issue(repo, number, grooming_comment_body(result, applied=True)) and ok
+
+    return ok
+
+
+def write_backlog_grooming_report(records: list[dict[str, Any]], report_path: str | None = None) -> Path:
+    BACKLOG_GROOMING_REPORTS.mkdir(parents=True, exist_ok=True)
+    if report_path:
+        path = Path(report_path)
+    else:
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = BACKLOG_GROOMING_REPORTS / f"backlog-grooming-{stamp}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        for record in records:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+    return path
+
+
+def groom_backlog_issues(
+    issues: list[dict[str, Any]],
+    *,
+    apply: bool,
+    max_items: int,
+    force: bool,
+    include_no_status: bool,
+    comment: bool,
+    report_path: str | None,
+) -> tuple[int, int, int, Path | None]:
+    state = load_backlog_grooming_state()
+    issue_state = state.setdefault("issues", {})
+    candidates = backlog_grooming_candidates(issues, include_no_status=include_no_status)
+    if max_items >= 0:
+        candidates = candidates[:max_items]
+
+    print(f"  Backlog grooming candidates: {len(candidates)}")
+    records: list[dict[str, Any]] = []
+    investigated = 0
+    applied = 0
+    surfaced = 0
+
+    for issue in candidates:
+        repo = repo_full_name(issue)
+        number = issue_number(issue)
+        if number is None:
+            continue
+        key = f"{repo}#{number}"
+        previous = issue_state.get(key) if isinstance(issue_state, dict) else None
+        fingerprint = f"{issue_updated_at(issue)}|{issue_status(issue) or 'no-status'}|{normalize_lane(issue.get('currentLane')) or 'normal'}"
+        if not force and isinstance(previous, dict) and previous.get("fingerprint") == fingerprint:
+            if not apply or previous.get("appliedAt"):
+                print(f"  [{key}] unchanged since last grooming; skipping")
+                continue
+
+        print(f"  [{key}] investigating: {issue_title(issue)[:80]}")
+        comments = github_issue_comments(repo, number)
+        prompt = build_backlog_grooming_prompt(issue, comments)
+        try:
+            raw = run_backlog_grooming_llm(prompt)
+            result = parse_backlog_grooming_result(raw)
+        except Exception as e:
+            print(f"      [!] grooming LLM failed: {e}")
+            result = {
+                "recommendation": "needs-human",
+                "lane": normalize_lane(issue.get("currentLane")) or "backlog",
+                "confidence": "low",
+                "reason": f"LLM grooming failed: {e}",
+                "summary": "Automated grooming could not complete.",
+                "likelyFiles": [],
+                "acceptanceCriteria": [],
+                "validation": [],
+                "nextAction": "Human should inspect this issue and rerun backlog grooming.",
+            }
+
+        investigated += 1
+        if result["recommendation"] not in {"ready", "escalated"}:
+            surfaced += 1
+
+        record = {
+            "repo": repo,
+            "number": number,
+            "title": issue_title(issue),
+            "url": issue_url(issue),
+            "labels": issue.get("labels") or [],
+            "status": issue_status(issue),
+            "currentLane": normalize_lane(issue.get("currentLane")) or "normal",
+            "fingerprint": fingerprint,
+            "result": result,
+            "applied": False,
+        }
+
+        if apply:
+            if comment and existing_grooming_comment(repo, number) and not force:
+                print("      existing grooming comment found; not adding duplicate comment")
+                should_comment = False
+            else:
+                should_comment = comment
+            if apply_backlog_grooming(issue, result, comment=should_comment):
+                applied += 1
+                record["applied"] = True
+                issue_state[key] = {
+                    "fingerprint": fingerprint,
+                    "recommendation": result["recommendation"],
+                    "lane": result["lane"],
+                    "appliedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+        else:
+            issue_state[key] = {
+                "fingerprint": fingerprint,
+                "recommendation": result["recommendation"],
+                "lane": result["lane"],
+                "dryRunAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            }
+
+        print(f"      recommendation={result['recommendation']} lane={result['lane']} confidence={result['confidence']}")
+        print(f"      reason={result.get('reason') or '(none)'}")
+        records.append(record)
+
+    report = write_backlog_grooming_report(records, report_path) if records else None
+    save_backlog_grooming_state(state)
+    if report:
+        print(f"  Backlog grooming report: {report}")
+    return investigated, applied, surfaced, report
 
 
 def is_open(issue: dict[str, Any]) -> bool:
@@ -516,6 +950,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Dispatch-first grooming for Saffron queues")
     parser.add_argument("--no-sync", action="store_true", help="Skip Dispatch issue sync before grooming")
     parser.add_argument("--list-tracked-repos", action="store_true", help="Print enabled tracked repos from Dispatch and exit")
+    parser.add_argument("--groom-backlog", action="store_true", help="Run LLM-assisted backlog investigation/enrichment pass")
+    parser.add_argument("--groom-backlog-only", action="store_true", help="Only run backlog grooming; skip normal closure/lane/cron mutations")
+    parser.add_argument("--groom-backlog-apply", action="store_true", help="Apply backlog grooming recommendations through Dispatch/GitHub")
+    parser.add_argument("--groom-backlog-max", type=int, default=5, help="Maximum backlog items to investigate (-1 for all)")
+    parser.add_argument("--groom-backlog-force", action="store_true", help="Re-groom issues even if unchanged since last pass")
+    parser.add_argument("--groom-backlog-include-no-status", action="store_true", help="Also investigate no-status non-Renovate issues")
+    parser.add_argument("--groom-backlog-no-comment", action="store_true", help="Do not add GitHub enrichment comments when applying")
+    parser.add_argument("--groom-backlog-report", help="Write backlog grooming JSONL report to this path")
     args = parser.parse_args()
 
     global TRACKED_REPOS
@@ -545,6 +987,29 @@ def main() -> int:
     print(f"  Open cached tracked issues: {open_count}")
     print(f"  Current lanes: {by_lane}")
 
+    if args.groom_backlog_only:
+        if not args.groom_backlog:
+            print("  [!] --groom-backlog-only requires --groom-backlog")
+            return 2
+        print("\n[*] LLM-assisted backlog grooming only...")
+        print("  Mode: APPLY (Dispatch/GitHub mutations enabled)" if args.groom_backlog_apply else "  Mode: DRY-RUN (no Dispatch/GitHub mutations)")
+        backlog_groomed, backlog_promoted, backlog_surfaced, _report = groom_backlog_issues(
+            issues,
+            apply=args.groom_backlog_apply,
+            max_items=args.groom_backlog_max,
+            force=args.groom_backlog_force,
+            include_no_status=args.groom_backlog_include_no_status,
+            comment=not args.groom_backlog_no_comment,
+            report_path=args.groom_backlog_report,
+        )
+        print("\nSummary:")
+        print(
+            f"  dispatch:{len(issues)} cached,{open_count} open,{backlog_groomed} "
+            f"backlog_investigated,{backlog_promoted} backlog_applied,{backlog_surfaced} "
+            "backlog_surfaced_not_ready"
+        )
+        return 0
+
     print("\n[*] Checking merged PR closures from GitHub...")
     merged_prs = {}
     for repo in TRACKED_REPOS:
@@ -566,11 +1031,40 @@ def main() -> int:
     changed_lanes = reconcile_lanes(issues)
     print(f"  Lane updates: {changed_lanes}")
 
+    backlog_groomed = 0
+    backlog_promoted = 0
+    backlog_surfaced = 0
+    if args.groom_backlog:
+        print("\n[*] LLM-assisted backlog grooming...")
+        if args.groom_backlog_apply:
+            print("  Mode: APPLY (Dispatch/GitHub mutations enabled)")
+        else:
+            print("  Mode: DRY-RUN (no Dispatch/GitHub mutations)")
+        backlog_groomed, backlog_promoted, backlog_surfaced, _report = groom_backlog_issues(
+            issues,
+            apply=args.groom_backlog_apply,
+            max_items=args.groom_backlog_max,
+            force=args.groom_backlog_force,
+            include_no_status=args.groom_backlog_include_no_status,
+            comment=not args.groom_backlog_no_comment,
+            report_path=args.groom_backlog_report,
+        )
+        print(
+            f"  Backlog grooming: investigated={backlog_groomed} "
+            f"applied={backlog_promoted} surfaced_not_ready={backlog_surfaced}"
+        )
+
     print("\n[*] Managing crons from Dispatch queues...")
     normal_count, escalated_count = manage_crons()
 
     print("\nSummary:")
-    print(f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,{escalated_count} escalated_queue,{closed} closed,{reconciled_statuses} stale_done_reconciled,{changed_lanes} lane_updates")
+    print(
+        f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,"
+        f"{escalated_count} escalated_queue,{closed} closed,{reconciled_statuses} "
+        f"stale_done_reconciled,{changed_lanes} lane_updates,{backlog_groomed} "
+        f"backlog_investigated,{backlog_promoted} backlog_applied,{backlog_surfaced} "
+        "backlog_surfaced_not_ready"
+    )
     return 0
 
 
