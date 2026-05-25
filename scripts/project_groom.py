@@ -347,6 +347,82 @@ def existing_grooming_comment(repo: str, number: int) -> bool:
     return any(BACKLOG_GROOMING_MARKER in str(comment.get("body") or "") for comment in comments)
 
 
+def github_issue_snapshot(repo: str, number: int) -> dict[str, Any] | None:
+    r = gh([
+        "issue",
+        "view",
+        str(number),
+        "--repo",
+        repo,
+        "--json",
+        "body,labels,number,state,title,updatedAt,url",
+    ], timeout=60)
+    if r.returncode != 0:
+        print(f"      [!] failed to fetch live issue state: {(r.stderr or r.stdout).strip()[:300]}")
+        return None
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        print("      [!] failed to parse live issue state")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def live_issue_status(snapshot: dict[str, Any]) -> str | None:
+    for label in snapshot.get("labels") or []:
+        name = label.get("name") if isinstance(label, dict) else label
+        name_s = str(name or "").lower()
+        if name_s.startswith("status/"):
+            return name_s
+    return None
+
+
+def issue_with_live_github_state(issue: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    live = dict(issue)
+    if snapshot.get("title"):
+        live["title"] = snapshot["title"]
+    if snapshot.get("body") is not None:
+        live["body"] = snapshot["body"]
+    if snapshot.get("state"):
+        live["state"] = str(snapshot["state"]).lower()
+    if snapshot.get("updatedAt"):
+        live["updatedAt"] = snapshot["updatedAt"]
+    if snapshot.get("url"):
+        live["url"] = snapshot["url"]
+    if snapshot.get("labels") is not None:
+        live["labels"] = [
+            str(label.get("name") if isinstance(label, dict) else label)
+            for label in snapshot.get("labels") or []
+        ]
+    return live
+
+
+def issue_has_actionable_detail(issue: dict[str, Any]) -> bool:
+    body = issue_body(issue).lower()
+    if len(body.strip()) < 900:
+        return False
+    has_scope = any(
+        marker in body
+        for marker in [
+            "## goal",
+            "## problem",
+            "## desired behavior",
+            "## root cause",
+            "## suggested implementation",
+        ]
+    )
+    has_acceptance = "acceptance criteria" in body
+    has_validation = "## validation" in body or "## tests" in body or "\n## test" in body
+    return has_scope and has_acceptance and has_validation
+
+
+def should_comment_on_grooming(issue: dict[str, Any], result: dict[str, Any]) -> tuple[bool, str]:
+    recommendation = result.get("recommendation")
+    if recommendation in {"ready", "escalated"} and issue_has_actionable_detail(issue):
+        return False, "issue already has actionable scope, acceptance criteria, and validation"
+    return True, "grooming comment adds missing detail or surfaces a non-ready reason"
+
+
 def truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -556,6 +632,17 @@ def apply_backlog_grooming(issue: dict[str, Any], result: dict[str, Any], *, com
     if not repo or number is None or not issue_id:
         return False
 
+    snapshot = github_issue_snapshot(repo, number)
+    if snapshot is None:
+        return False
+    if str(snapshot.get("state") or "").upper() != "OPEN":
+        print("      live issue is closed; skipping Dispatch updates and comments")
+        return False
+    live_status = live_issue_status(snapshot)
+    if live_status in {"status/in-progress", "status/in-review", "status/done", "status/ready"}:
+        print(f"      live issue is {live_status}; skipping Dispatch updates and comments")
+        return False
+
     ok = True
     desired_lane = result["lane"]
     current_lane = normalize_lane(issue.get("currentLane")) or "normal"
@@ -572,7 +659,12 @@ def apply_backlog_grooming(issue: dict[str, Any], result: dict[str, Any], *, com
         ok = set_dispatch_status(issue, "ready", "LLM-assisted backlog grooming marked issue claimable") and ok
 
     if comment:
-        ok = comment_on_issue(repo, number, grooming_comment_body(result, applied=True)) and ok
+        live_issue = issue_with_live_github_state(issue, snapshot)
+        should_comment, reason = should_comment_on_grooming(live_issue, result)
+        if should_comment:
+            ok = comment_on_issue(repo, number, grooming_comment_body(result, applied=True)) and ok
+        else:
+            print(f"      grooming comment skipped: {reason}")
 
     return ok
 
@@ -619,6 +711,35 @@ def groom_backlog_issues(
         if number is None:
             continue
         key = f"{repo}#{number}"
+
+        snapshot = github_issue_snapshot(repo, number)
+        if snapshot is None:
+            print(f"  [{key}] live issue state unavailable; skipping")
+            continue
+        live_state = str(snapshot.get("state") or "").upper()
+        if live_state != "OPEN":
+            print(f"  [{key}] live issue is {live_state.lower()}; skipping")
+            issue_state[key] = {
+                "fingerprint": f"{issue_updated_at(issue)}|{issue_status(issue) or 'no-status'}|{normalize_lane(issue.get('currentLane')) or 'normal'}",
+                "recommendation": "skip-closed",
+                "lane": normalize_lane(issue.get("currentLane")) or "backlog",
+                "skippedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "skipReason": f"GitHub issue is {live_state.lower()}",
+            }
+            continue
+        live_status = live_issue_status(snapshot)
+        if live_status in {"status/in-progress", "status/in-review", "status/done", "status/ready"}:
+            print(f"  [{key}] live issue is {live_status}; skipping")
+            issue_state[key] = {
+                "fingerprint": f"{issue_updated_at(issue)}|{issue_status(issue) or 'no-status'}|{normalize_lane(issue.get('currentLane')) or 'normal'}",
+                "recommendation": "skip-live-status",
+                "lane": normalize_lane(issue.get("currentLane")) or "backlog",
+                "skippedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "skipReason": f"GitHub issue is {live_status}",
+            }
+            continue
+
+        issue = issue_with_live_github_state(issue, snapshot)
         previous = issue_state.get(key) if isinstance(issue_state, dict) else None
         fingerprint = f"{issue_updated_at(issue)}|{issue_status(issue) or 'no-status'}|{normalize_lane(issue.get('currentLane')) or 'normal'}"
         if not force and isinstance(previous, dict) and previous.get("fingerprint") == fingerprint:
@@ -669,6 +790,10 @@ def groom_backlog_issues(
                 should_comment = False
             else:
                 should_comment = comment
+            if should_comment:
+                should_comment, reason = should_comment_on_grooming(issue, result)
+                if not should_comment:
+                    print(f"      grooming comment skipped: {reason}")
             if apply_backlog_grooming(issue, result, comment=should_comment):
                 applied += 1
                 record["applied"] = True

@@ -93,7 +93,7 @@ Recommendations are one of:
 - `escalated` — promote to `status/ready` on the escalated lane.
 - `decompose`, `needs-info`, `needs-human`, or `keep-backlog` — keep out of Ready and surface the reason/next action in the report.
 
-With `--groom-backlog-apply`, the script uses Dispatch APIs for status/lane updates and posts a guarded GitHub enrichment comment unless `--groom-backlog-no-comment` is set.
+With `--groom-backlog-apply`, the script uses Dispatch APIs for status/lane updates and may post a guarded GitHub enrichment comment unless `--groom-backlog-no-comment` is set. Comments are only posted when they add missing detail or surface a non-ready reason; fully specified ready issues are promoted without a redundant grooming note. The groomer also re-checks live GitHub state before investigation and apply, so closed or already-ready issues are skipped even if Dispatch cache is stale.
 
 Affected cron jobs:
 - `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
