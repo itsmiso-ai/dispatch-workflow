@@ -1058,9 +1058,10 @@ def manage_crons() -> tuple[int, int]:
         print("  -> No normal Dispatch work — disabling normal wishlist cron")
         set_wishlist_cron(False)
 
-    if escalated_queue or queued_gpt_pr_fixes:
+    escalated_ready = [i for i in escalated_queue if i.get("status") == "status/ready"]
+    if escalated_ready or queued_gpt_pr_fixes:
         print("  Escalated queue items:")
-        for item in escalated_queue[:10]:
+        for item in escalated_ready[:10]:
             print(f"      {item.get('repoFullName', '?')} #{item.get('number', '?')}: {str(item.get('title') or '')[:70]}")
         print("  -> Keeping GPT wishlist cron enabled")
         set_cron_enabled(GPT_AUDIT_CRON_ID, True, "(Saffron): GPT-5.5 Wishlist Chip")
