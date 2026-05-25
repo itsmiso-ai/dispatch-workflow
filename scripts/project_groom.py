@@ -911,30 +911,20 @@ def judge_lane(repo: str, number: int) -> dict[str, Any] | None:
 
 
 def set_cron_enabled(job_id: str, enabled: bool, display_name: str) -> None:
+    """Set cron enabled state via openclaw CLI -- gateway does not hot-reload jobs.json."""
+    import subprocess
+    state = "ENABLED" if enabled else "DISABLED"
+    print(f"  [*] {display_name} -> {state}")
+    flag = "--enable" if enabled else "--disable"
     try:
-        with open(CRON_JOBS_FILE) as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"  [!] Could not read {CRON_JOBS_FILE}: {e}")
-        return
-
-    found = False
-    for job in data.get("jobs", []):
-        if job.get("id") == job_id:
-            job["enabled"] = enabled
-            found = True
-            state = "ENABLED" if enabled else "DISABLED"
-            print(f"  [*] {display_name} -> {state}")
-
-    if not found:
-        print(f"  [!] Could not find {display_name} cron id {job_id}")
-        return
-
-    try:
-        with open(CRON_JOBS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        r = subprocess.run(
+            ["openclaw", "cron", "edit", job_id, flag],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            print(f"  [!] openclaw cron edit failed: {r.stderr[:200]}")
     except Exception as e:
-        print(f"  [!] Could not write {CRON_JOBS_FILE}: {e}")
+        print(f"  [!] openclaw cron edit error: {e}")
 
 
 def set_wishlist_cron(enabled: bool) -> None:
