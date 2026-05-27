@@ -18,7 +18,19 @@ Do not silently discard mismatched active work. Do not mutate Dispatch state for
 
 ## PR-Fix Queue (Precedence)
 
-Check before picking new work:
+Check deterministic preflight before picking new work:
+
+```bash
+DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane normal --claim --json
+```
+
+Interpret the returned action before doing anything else:
+- `clear` / `stuck`: reply with `terminal` exactly and stop.
+- `pr-fix`: handle the returned PR-fix item only.
+- `resume-active-work`: obey the returned `nextAction` exactly.
+- `claim-ready-issue`: implement the returned claimed Ready issue.
+
+The legacy direct PR-fix queue command is:
 
 ```bash
 DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py next --lane normal
@@ -39,6 +51,9 @@ Workers must NOT open a new PR for queued PR-fix work.
 ---
 
 ## Select Ready Work
+
+Prefer the deterministic preflight packet over manually reading the queue.
+Manual queue inspection is only for debugging the preflight result:
 
 ```bash
 curl -fsS "$DISPATCH_URL/api/agents/$DISPATCH_AGENT_NAME/queue?lane=normal"

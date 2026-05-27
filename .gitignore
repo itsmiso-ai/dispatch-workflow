@@ -9,12 +9,20 @@
 !docs/
 docs/*
 
+# Allow worker runbooks.
+!worker-runbooks/
+worker-runbooks/*
+!worker-runbooks/shared-dispatch-worker.md
+!worker-runbooks/normal-lane-worker.md
+!worker-runbooks/escalated-lane-worker.md
+
 # Allow selected scripts directory entries.
 !scripts/
 scripts/*
 
 # Dispatch workflow scripts.
 !scripts/dispatch_reporter.py
+!scripts/dispatch_worker_preflight.py
 !scripts/issue_lane_judge.py
 !scripts/project_groom.py
 !scripts/project_backlog_sync.py
@@ -24,6 +32,7 @@ scripts/*
 !scripts/github_followup_watcher.py
 !scripts/research_before_task.py
 !scripts/sync_summary.py
+!scripts/worker_result_guard.py
 
 # Explicit never-track rules.
 HEARTBEAT.md
@@ -44,6 +53,3 @@ __pycache__/
 *.pyc
 *.md.bak
 *.bak
-# Allow worker runbooks.
-!worker-runbooks/
-worker-runbooks/*

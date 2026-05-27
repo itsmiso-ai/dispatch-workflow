@@ -39,6 +39,35 @@ These rules apply to all Saffron isolated worker sessions regardless of lane.
 
 ---
 
+## Deterministic Preflight
+
+Before asking the model to choose work, run the local preflight script for the
+worker lane. This script owns deterministic plumbing: PR-fix queue lookup,
+active-work lookup, lane verification, queue selection, and optional claim.
+
+Normal lane:
+
+```bash
+DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane normal --claim --json
+```
+
+Escalated lane:
+
+```bash
+DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
+```
+
+Preflight result actions:
+- `clear` — reply with the provided `terminal` exactly and stop.
+- `stuck` — reply with the provided `terminal` exactly and stop.
+- `pr-fix` — handle the returned PR-fix item only; do not open a new PR.
+- `resume-active-work` — obey the returned `nextAction` exactly.
+- `claim-ready-issue` — implement the returned claimed Ready issue.
+
+If preflight returns `stuck`, do not continue by guessing. The preflight script
+has already determined that deterministic worker state is unsafe or incomplete.
+
+---
 ## Preflight Before Claim
 
 Before claiming work, verify all of:
@@ -117,3 +146,9 @@ END with exactly one of:
 - `Stuck: {reason}.`
 
 **Hard completion gate:** Do not end after local commit only. After any PR interaction: push, create/update PR, verify with `gh pr view`, update Dispatch checkpoint/status.
+
+Validate the final text against the local guard before ending when practical:
+
+```bash
+printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/scripts/worker_result_guard.py
+```

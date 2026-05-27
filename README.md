@@ -36,6 +36,8 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `github_followup_watcher.py` | Watch for PR/issue activity by itsmiso-ai |
 | `issue_lane_judge.py` | Classify issues into `normal`/`escalated`/`backlog` lanes |
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
+| `dispatch_worker_preflight.py` | Deterministic Noelle/Varka worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
+| `worker_result_guard.py` | Validate Noelle/Varka final text against the terminal worker contract |
 | `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
 | `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
@@ -54,6 +56,25 @@ Worker cron prompts no longer reference GitHub Project boards. Instead, they con
 
 Workers claim work via `POST /api/issues/claim` and update lifecycle status via Dispatch status/lease/checkpoint APIs. GitHub Projects are fully deprecated and must not be queried or mutated by active workflow scripts.
 
+Noelle/Varka work selection starts with deterministic local preflight, not model judgment:
+
+```bash
+DISPATCH_AGENT_NAME=saffron-normal python3 scripts/dispatch_worker_preflight.py --lane normal --claim --json
+DISPATCH_AGENT_NAME=saffron-escalated python3 scripts/dispatch_worker_preflight.py --lane escalated --claim --json
+```
+
+The preflight result action decides the worker path:
+- `clear` / `stuck` — reply with the provided `terminal` and stop.
+- `pr-fix` — update the existing PR only.
+- `resume-active-work` — obey the returned `nextAction` exactly.
+- `claim-ready-issue` — implement the returned claimed Ready issue.
+
+Cron result text must match the terminal contract. Use:
+
+```bash
+printf '%s\n' "$FINAL_TEXT" | python3 scripts/worker_result_guard.py
+```
+
 Board status contract:
 - `status/backlog` = needs triage/grooming, not ready for agents.
 - `status/ready` = groomed/actionable and available to claim.
@@ -70,34 +91,35 @@ Work selection:
 - Renovate issues are excluded from agent queues unless explicitly requested.
 - If Dispatch returns active work, a checkpoint, or `nextAction`, workers obey that next action exactly, perform one bounded step, update Dispatch with the result/checkpoint, and stop.
 
-## LLM-assisted backlog grooming
+## Bounded LLM-assisted backlog grooming
 
-`project_groom.py` has an explicit backlog investigation mode for issues that are stuck in `status/backlog`.
+`project_groom.py` has an explicit backlog investigation mode for open issues that are stuck in `status/backlog`. Heartbeat runs deterministic sync/grooming first, then uses this bounded intelligence step to enrich up to 3 previously ungroomed backlog issues per run.
 
 Dry-run investigation, no mutations:
 
 ```bash
-python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-max 5
+python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-use-llm --groom-backlog-only --groom-backlog-max 5
 ```
 
 Apply recommendations after reviewing the report:
 
 ```bash
-python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-apply --groom-backlog-max 5
+python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-use-llm --groom-backlog-only --groom-backlog-apply --groom-backlog-max 5
 ```
 
-The grooming pass uses an LLM (`BACKLOG_GROOMING_MODEL`, default `openai-codex/gpt-5.5`) to read issue metadata and recent comments, then records a JSONL report under `.state/backlog_grooming_reports/`.
+The grooming pass requires the explicit `--groom-backlog-use-llm` flag before it will call a model. It uses `BACKLOG_GROOMING_MODEL` (default `litellm/self-hosted`) to read issue metadata and recent comments, then records a JSONL report under `.state/backlog_grooming_reports/`. The script refuses GPT models for backlog grooming; use MiniMax/self-hosted here, and reserve GPT for the weekly audit and Varka cron only.
 
 Recommendations are one of:
 - `ready` — promote to `status/ready` and keep/use the recommended lane.
 - `escalated` — promote to `status/ready` on the escalated lane.
-- `decompose`, `needs-info`, `needs-human`, or `keep-backlog` — keep out of Ready and surface the reason/next action in the report.
+- `needs-info` or `needs-human` — keep out of Ready and surface as a human-attention escalation.
+- `decompose` or `keep-backlog` — keep out of Ready and record the reason/next action in the report without surfacing as an escalation.
 
 With `--groom-backlog-apply`, the script uses Dispatch APIs for status/lane updates and may post a guarded GitHub enrichment comment unless `--groom-backlog-no-comment` is set. Comments are only posted when they add missing detail or surface a non-ready reason; fully specified ready issues are promoted without a redundant grooming note. The groomer also re-checks live GitHub state before investigation and apply, so closed or already-ready issues are skipped even if Dispatch cache is stale.
 
 Affected cron jobs:
-- `(Saffron): 35B Wishlist Chip` — normal lane, uses Dispatch normal queue
-- `(Saffron): GPT-5.5 Wishlist Chip` — escalated lane, uses Dispatch escalated queue
+- `(Saffron): MC: Noelle` — normal lane, uses Dispatch normal queue
+- `(Saffron): MC: Varka` — escalated lane, uses Dispatch escalated queue
 
 ## Security
 
