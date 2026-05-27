@@ -991,8 +991,6 @@ def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
     return reconciled
 
 
-
-
 def reconcile_closed_issue_statuses(issues: list[dict[str, Any]]) -> int:
     """Closed GitHub issues must not remain active/claimable in Dispatch.
 
@@ -1020,7 +1018,7 @@ def reconcile_closed_issue_statuses(issues: list[dict[str, Any]]) -> int:
         if snapshot is None:
             print(f"  [!] Could not fetch live state for {repo} #{number}; skipping")
             continue
-        if snapshot.get("state") != "closed":
+        if str(snapshot.get("state") or "").lower() != "closed":
             continue
         print(f"  [{repo} #{number}] GitHub closed but Dispatch has active status; reconciling to done")
         if set_dispatch_status(issue, "done", "GitHub closed, was active in Dispatch"):
@@ -1240,7 +1238,10 @@ def main() -> int:
     reconciled_statuses = reconcile_stale_done_statuses(issues)
     print(f"  Reconciled stale Done statuses: {reconciled_statuses}")
 
-    if closed or reconciled_statuses:
+    closed_active_reconciled = reconcile_closed_issue_statuses(issues)
+    print(f"  Reconciled closed-active statuses: {closed_active_reconciled}")
+
+    if closed or reconciled_statuses or closed_active_reconciled:
         print("\n[*] Re-syncing Dispatch after GitHub/status mutations...")
         dispatch_sync()
         issues = get_all_dispatch_issues()
