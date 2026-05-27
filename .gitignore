@@ -44,3 +44,6 @@ __pycache__/
 *.pyc
 *.md.bak
 *.bak
+# Allow worker runbooks.
+!worker-runbooks/
+worker-runbooks/*
