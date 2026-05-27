@@ -38,6 +38,7 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
 | `dispatch_worker_preflight.py` | Deterministic Noelle/Varka worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
 | `worker_result_guard.py` | Validate Noelle/Varka final text against the terminal worker contract |
+| `heartbeat.py` | Run the compact heartbeat contract: watcher, sync, grooming, bounded enrichment, and Dispatch run reporting |
 | `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
 | `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |

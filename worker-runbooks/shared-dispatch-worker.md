@@ -1,153 +1,93 @@
 # Shared Dispatch Worker Policy
 
-These rules apply to all Saffron isolated worker sessions regardless of lane.
+Rules for Saffron worker sessions in any lane. Read the lane-specific runbook
+after this file.
 
----
+## Source Of Truth
 
-## Dispatch v0.3 Source of Truth
+- Use `DISPATCH_URL`, `DISPATCH_AGENT_TOKEN`, and `DISPATCH_AGENT_NAME`.
+- Do not use `MISSION_CONTROL_*`.
+- GitHub issues/PRs are authoritative for issue state, labels, PRs, and closure.
+- Dispatch owns queues, claims, leases, checkpoints, lane assignment, status
+  transitions, and `nextAction`.
+- GitHub Projects are deprecated. Do not read or mutate them.
 
-- Use `DISPATCH_URL` and `DISPATCH_AGENT_TOKEN` only. Do NOT use `MISSION_CONTROL_*`.
-- Use `DISPATCH_AGENT_NAME` to identify which worker is running. The heartbeat/control-plane uses `saffron`. Worker crons set this to `saffron-normal` or `saffron-escalated` via their environment.
-- GitHub issues/PRs are the user-facing source of truth; Dispatch owns queues, claims, leases, checkpoints, lane assignment, and status transitions.
-- GitHub Projects are deprecated; do not read or mutate project boards.
-- Direct GitHub status/agent label edits are avoided when Dispatch APIs exist.
-
----
-
-## Five-Column Board Semantics
+## Status Contract
 
 | Status | Meaning |
 |---|---|
-| `status/backlog` | Needs triage/grooming; not yet ready for agents |
-| `status/ready` | Groomed/actionable; normal queue source |
-| `status/in-progress` | Claimed/implementation started |
-| `status/in-review` | PR opened/checks/review pending; issue still open |
+| `status/backlog` | needs triage/grooming; not claimable |
+| `status/ready` | groomed/actionable; claimable |
+| `status/in-progress` | claimed or implementation started |
+| `status/in-review` | PR opened; issue still open |
 | `status/done` | GitHub issue closed/terminal only |
 
-**Hard rule:** Opening or updating a PR is not Done. An open issue with an unmerged PR must be `status/in-review`, not `status/done`.
-
----
-
-## Work Selection
-
-- Prefer Dispatch queue/API over manually scraping GitHub labels.
-- Pick `status/ready` work by default.
-- Do not pick `status/backlog` unless explicitly asked.
-- PR-fix queue takes precedence over new issue work.
-- One item per run. One bounded step per run.
-- Respect `nextAction` / `checkpoint` if active work exists.
-
----
+Opening or updating a PR is not Done. Open issue plus open PR means
+`status/in-review`.
 
 ## Deterministic Preflight
 
-Before asking the model to choose work, run the local preflight script for the
-worker lane. This script owns deterministic plumbing: PR-fix queue lookup,
-active-work lookup, lane verification, queue selection, and optional claim.
+Run the lane-specific `dispatch_worker_preflight.py` command before model
+judgment. It owns PR-fix queue lookup, active-work lookup, lane verification,
+queue selection, repo workspace checks, and optional claim.
 
-Normal lane:
+Preflight actions:
+- `clear` / `stuck`: reply with `terminal` exactly and stop.
+- `pr-fix`: update the returned PR only.
+- `resume-active-work`: obey returned `nextAction` exactly.
+- `claim-ready-issue`: implement returned claimed Ready issue.
 
-```bash
-DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane normal --claim --json
-```
+If preflight says `stuck`, do not guess past it.
 
-Escalated lane:
+## Work Rules
 
-```bash
-DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
-```
+- PR-fix queue takes precedence over new issue work.
+- One item per run. One bounded step per run.
+- Do not consume `status/backlog`.
+- Do not consume Renovate issues unless explicitly requested.
+- Ignore work claimed by another agent.
+- Before coding, check for an existing PR. Do not open duplicates.
+- Workers update existing PR branches for PR-fix work.
 
-Preflight result actions:
-- `clear` — reply with the provided `terminal` exactly and stop.
-- `stuck` — reply with the provided `terminal` exactly and stop.
-- `pr-fix` — handle the returned PR-fix item only; do not open a new PR.
-- `resume-active-work` — obey the returned `nextAction` exactly.
-- `claim-ready-issue` — implement the returned claimed Ready issue.
+## Active Work
 
-If preflight returns `stuck`, do not continue by guessing. The preflight script
-has already determined that deterministic worker state is unsafe or incomplete.
+If Dispatch returns active work:
 
----
-## Preflight Before Claim
-
-Before claiming work, verify all of:
-- Dispatch is reachable.
-- token is valid.
-- repo workspace can be prepared (`/data/git/{repo}`).
-- required tools are available.
-- checkpoint/status reporting will succeed after the bounded step.
-
-If any check FAILS after claiming:
-- release/mark blocked through Dispatch API if available.
-- report clear stuck reason.
-- do not silently leave ghost claimed work.
-
-If a run cannot proceed after claiming: END with `Stuck: {reason}`.
-
----
-
-## Active Work Resumption
-
-```bash
-curl -fsS "$DISPATCH_URL/api/agents/$DISPATCH_AGENT_NAME/active-work"
-```
-
-If Dispatch returns active work with `checkpoint` / `nextAction`:
-1. **Lane verification before obeying.** Inspect the lane field on the active work. If the lane matches the worker's lane, proceed. If the lane cannot be verified or does not match, stop with `Stuck: active work lane mismatch or could not be verified.` Do not mutate Dispatch state for mismatched active work.
+1. Verify the lane matches the worker lane.
 2. Obey `nextAction` exactly.
-3. Perform one bounded step.
-4. Update Dispatch via `/api/agent-work/checkpoint` or `/api/agent-work/finish`.
-5. STOP.
+3. Do one bounded step.
+4. Update Dispatch checkpoint/finish/status.
+5. Stop.
 
-Do not infer a different workflow from memory or old prompt text.
+If lane is missing or mismatched, end:
+`Stuck: active work lane mismatch or could not be verified.`
 
----
+## Implementation Gate
 
-## Claiming
+After code changes:
 
-Claim unclaimed work through Dispatch before starting.
-Only skip if the selected item already has the matching `agent/$DISPATCH_AGENT_NAME` in its agent field or active-work context.
+1. validate locally as far as practical
+2. commit
+3. push
+4. open/update PR
+5. verify with `gh pr view`
+6. update Dispatch to `status/in-review` or checkpoint/finish
+7. stop
 
-```bash
-curl -fsS -X POST "$DISPATCH_URL/api/issues/claim" \
-  -H "Authorization: Bearer $DISPATCH_AGENT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"issueId":"{issueId}","repoFullName":"{repo}","issueNumber":{number},"agentName":"'"$DISPATCH_AGENT_NAME"'"}'
-```
+Never end after local commit only.
 
-If claim fails: END: `Stuck: claim failed for {repo} #{number}: {reason}.`
+## PR Body
 
----
+PR body must start with exactly one of:
+- `Fixes #{number}`
+- `Refs #{number}`
 
-## PR Rules
+No heading or blank line before that keyword.
 
-- Before coding, check for an existing PR. Do NOT open a duplicate.
-- PR body MUST start with exactly one of:
-  - `Fixes #{number}` when the PR fully satisfies the in-scope issue.
-  - `Refs #{number}` when the PR is partial/incremental.
-  - Nothing before that keyword: no heading, no blank line.
-- After opening/updating a PR, set/checkpoint through Dispatch so the issue is In Review. Do not mark open issues Done.
+## Final Guard
 
----
-
-## Renovate Issues
-
-Excluded from Dispatch queues unless the queue item explicitly says Renovate work is requested.
-
----
-
-## Final Response Formats
-
-END with exactly one of:
-- `Pipeline is clear.` / `Escalated lane is clear.`
-- `Done. PR #{pr} opened for {repo} #{number}: {pr_url}.`
-- `Done. PR #{pr} updated for {repo}: {pr_url}.`
-- `Done. Decomposed {repo} #{number}: {child_urls}.`
-- `Stuck: {reason}.`
-
-**Hard completion gate:** Do not end after local commit only. After any PR interaction: push, create/update PR, verify with `gh pr view`, update Dispatch checkpoint/status.
-
-Validate the final text against the local guard before ending when practical:
+End only with a lane-specific final form from the lane runbook. Validate final
+text when practical:
 
 ```bash
 printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/scripts/worker_result_guard.py

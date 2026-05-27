@@ -8,6 +8,7 @@
 # Allow selected docs directory entries.
 !docs/
 docs/*
+!docs/subagent-patterns.md
 
 # Allow worker runbooks.
 !worker-runbooks/
@@ -30,6 +31,7 @@ scripts/*
 !scripts/wishlist_read_gpt_audit_board.py
 !scripts/pr_fix_queue.py
 !scripts/github_followup_watcher.py
+!scripts/heartbeat.py
 !scripts/research_before_task.py
 !scripts/sync_summary.py
 !scripts/worker_result_guard.py
