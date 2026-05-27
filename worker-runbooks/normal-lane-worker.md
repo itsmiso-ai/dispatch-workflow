@@ -1,6 +1,6 @@
 # Normal-Lane Worker — Dispatch Queue Consumption
 
-Lane: `normal`. Work sourced from `GET /api/agents/saffron/queue?lane=normal`.
+Lane: `normal`. This worker is identified as `$DISPATCH_AGENT_NAME=saffron-normal`.
 
 ---
 
@@ -9,7 +9,7 @@ Lane: `normal`. Work sourced from `GET /api/agents/saffron/queue?lane=normal`.
 Before obeying Dispatch active-work `nextAction` / `checkpoint`:
 
 1. Inspect the active work's lane field.
-2. If the lane is `normal` → proceed with step 1 of the active-work resumption flow.
+2. If the lane is `normal` → proceed with step 2 of the active-work resumption flow.
 3. If the lane is `escalated` or cannot be verified → stop. END: `Stuck: active work lane mismatch or could not be verified.`
 
 Do not silently discard mismatched active work. Do not mutate Dispatch state for mismatched active work.
@@ -21,7 +21,7 @@ Do not silently discard mismatched active work. Do not mutate Dispatch state for
 Check before picking new work:
 
 ```bash
-python3 /home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py next --lane normal
+DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py next --lane normal
 ```
 
 If it prints a JSON PR-fix item, handle the existing PR only:
@@ -41,17 +41,17 @@ Workers must NOT open a new PR for queued PR-fix work.
 ## Select Ready Work
 
 ```bash
-curl -fsS "$DISPATCH_URL/api/agents/saffron/queue?lane=normal"
+curl -fsS "$DISPATCH_URL/api/agents/$DISPATCH_AGENT_NAME/queue?lane=normal"
 ```
 
 Select exactly one actionable item:
-- Prefer the first item already claimed by `agent/saffron` if Dispatch returns it.
+- Prefer the first item already claimed by `agent/$DISPATCH_AGENT_NAME` if Dispatch returns it.
 - Otherwise choose the first unclaimed item with `status/ready` (or no status) if Dispatch marks it claimable.
 - Do NOT choose `status/backlog`; Backlog is triage only.
-- Ignore items claimed by other agents (`agent/<anything other than saffron>`).
+- Ignore items claimed by other agents (`agent/<anything other than $DISPATCH_AGENT_NAME>`).
 - Do NOT choose Renovate issues unless the item explicitly says Renovate work is requested.
 
-If no Saffron-claimed or unclaimed claimable Ready work exists: END: `Pipeline is clear.`
+If no $DISPATCH_AGENT_NAME-claimed or unclaimed claimable Ready work exists: END: `Pipeline is clear.`
 
 ---
 

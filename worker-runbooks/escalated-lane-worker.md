@@ -1,6 +1,6 @@
 # Escalated-Lane Worker — Dispatch Queue Consumption
 
-Lane: `escalated`. Work sourced from `GET /api/agents/saffron/queue?lane=escalated`.
+Lane: `escalated`. This worker is identified as `$DISPATCH_AGENT_NAME=saffron-escalated`.
 
 ---
 
@@ -9,7 +9,7 @@ Lane: `escalated`. Work sourced from `GET /api/agents/saffron/queue?lane=escalat
 Before obeying Dispatch active-work `nextAction` / `checkpoint`:
 
 1. Inspect the active work's lane field.
-2. If the lane is `escalated` → proceed with step 1 of the active-work resumption flow.
+2. If the lane is `escalated` → proceed with step 2 of the active-work resumption flow.
 3. If the lane is `normal` or cannot be verified → stop. END: `Stuck: active work lane mismatch or could not be verified.`
 
 Do not silently discard mismatched active work. Do not mutate Dispatch state for mismatched active work.
@@ -21,7 +21,7 @@ Do not silently discard mismatched active work. Do not mutate Dispatch state for
 Check before picking new work:
 
 ```bash
-python3 /home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py next --lane escalated
+DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py next --lane escalated
 ```
 
 If it prints a JSON PR-fix item, handle the existing PR only:
@@ -41,17 +41,17 @@ Workers must NOT open a new PR for queued PR-fix work.
 ## Select Ready Escalated Work
 
 ```bash
-curl -fsS "$DISPATCH_URL/api/agents/saffron/queue?lane=escalated"
+curl -fsS "$DISPATCH_URL/api/agents/$DISPATCH_AGENT_NAME/queue?lane=escalated"
 ```
 
 Select exactly one actionable item:
-- Prefer the first item already claimed by `agent/saffron` if Dispatch returns it.
+- Prefer the first item already claimed by `agent/$DISPATCH_AGENT_NAME` if Dispatch returns it.
 - Otherwise choose the first unclaimed `status/ready` escalated item.
 - Do NOT choose `status/backlog`; Backlog is triage only.
 - Ignore decomposed audit parents and items claimed by other agents.
 - Do NOT choose Renovate issues unless explicitly requested.
 
-If no Saffron-claimed or unclaimed claimable Ready escalated work exists: END: `Escalated lane is clear.`
+If no $DISPATCH_AGENT_NAME-claimed or unclaimed claimable Ready escalated work exists: END: `Escalated lane is clear.`
 
 ---
 

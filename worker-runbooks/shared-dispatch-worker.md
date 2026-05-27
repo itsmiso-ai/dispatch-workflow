@@ -7,6 +7,7 @@ These rules apply to all Saffron isolated worker sessions regardless of lane.
 ## Dispatch v0.3 Source of Truth
 
 - Use `DISPATCH_URL` and `DISPATCH_AGENT_TOKEN` only. Do NOT use `MISSION_CONTROL_*`.
+- Use `DISPATCH_AGENT_NAME` to identify which worker is running. The heartbeat/control-plane uses `saffron`. Worker crons set this to `saffron-normal` or `saffron-escalated` via their environment.
 - GitHub issues/PRs are the user-facing source of truth; Dispatch owns queues, claims, leases, checkpoints, lane assignment, and status transitions.
 - GitHub Projects are deprecated; do not read or mutate project boards.
 - Direct GitHub status/agent label edits are avoided when Dispatch APIs exist.
@@ -59,7 +60,7 @@ If a run cannot proceed after claiming: END with `Stuck: {reason}`.
 ## Active Work Resumption
 
 ```bash
-curl -fsS "$DISPATCH_URL/api/agents/saffron/active-work"
+curl -fsS "$DISPATCH_URL/api/agents/$DISPATCH_AGENT_NAME/active-work"
 ```
 
 If Dispatch returns active work with `checkpoint` / `nextAction`:
@@ -76,13 +77,13 @@ Do not infer a different workflow from memory or old prompt text.
 ## Claiming
 
 Claim unclaimed work through Dispatch before starting.
-Only skip if the selected item already has `agent/saffron` in its agent field or active-work context.
+Only skip if the selected item already has the matching `agent/$DISPATCH_AGENT_NAME` in its agent field or active-work context.
 
 ```bash
 curl -fsS -X POST "$DISPATCH_URL/api/issues/claim" \
   -H "Authorization: Bearer $DISPATCH_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"issueId":"{issueId}","repoFullName":"{repo}","issueNumber":{number},"agentName":"saffron"}'
+  -d '{"issueId":"{issueId}","repoFullName":"{repo}","issueNumber":{number},"agentName":"'"$DISPATCH_AGENT_NAME"'"}'
 ```
 
 If claim fails: END: `Stuck: claim failed for {repo} #{number}: {reason}.`
