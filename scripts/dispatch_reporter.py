@@ -46,7 +46,7 @@ def report_to_dispatch(
         return False
 
     payload = {
-        "agentName": "saffron",
+        "agentName": os.environ.get("DISPATCH_AGENT_NAME", "saffron"),
         "runType": run_type,
         "status": status,
         "startedAt": started_at,

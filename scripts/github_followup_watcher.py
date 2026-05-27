@@ -374,6 +374,57 @@ def main() -> int:
                     events=events,
                 )
 
+    # Detect prior items that have disappeared from open search — they may be closed/merged
+    for key, prev in prior.items():
+        if key in next_state:
+            continue
+        # Item no longer in current open results — fetch live state directly
+        repo_full, _, num_str = key.rpartition("#")
+        try:
+            number = int(num_str)
+        except ValueError:
+            continue
+        snapshot: dict[str, Any] = {}
+        if prev.get("kind") == "pr":
+            try:
+                info = gh_json(["pr", "view", str(number), "--repo", repo_full,
+                                "--json", "title,url,state,mergedAt,mergeStateStatus"])
+                snapshot = {
+                    "kind": "pr",
+                    "title": info.get("title") or "",
+                    "url": info.get("url") or "",
+                    "updatedAt": ts(info.get("updatedAt")),
+                    "state": info.get("state") or "unknown",
+                    "merged": bool(info.get("mergedAt")),
+                }
+                event_lines = [
+                    f"PR {key}: merged since last check" if info.get("mergedAt") else f"PR {key}: closed since last check"
+                ]
+                if not info.get("mergedAt") and info.get("state") == "closed":
+                    event_lines = [f"PR {key}: closed since last check"]
+                for line in event_lines:
+                    events.append(line)
+                    next_state[key] = snapshot
+            except Exception:
+                # PR not found or inaccessible — skip
+                continue
+        else:
+            try:
+                info = gh_json(["issue", "view", str(number), "--repo", repo_full,
+                                "--json", "title,url,state"])
+                snapshot = {
+                    "kind": "issue",
+                    "title": info.get("title") or "",
+                    "url": info.get("url") or "",
+                    "updatedAt": ts(info.get("updatedAt")),
+                    "state": info.get("state") or "unknown",
+                }
+                events.append(f"Issue {key}: closed since last check")
+                next_state[key] = snapshot
+            except Exception:
+                # Issue not found or inaccessible — skip
+                continue
+
     save_state({"items": next_state})
 
     if not events:

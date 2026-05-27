@@ -77,6 +77,10 @@ def dispatch_token() -> str:
     return os.environ.get("DISPATCH_AGENT_TOKEN", "")
 
 
+def dispatch_agent_name() -> str:
+    return os.environ.get("DISPATCH_AGENT_NAME", "saffron")
+
+
 def dispatch_request(path: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 20) -> Any:
     token = dispatch_token()
     if not token:
@@ -85,7 +89,7 @@ def dispatch_request(path: str, *, method: str = "GET", payload: dict[str, Any] 
     data = None
     headers = {
         "Authorization": f"Bearer {token}",
-        "X-Agent-Name": "saffron",
+        "X-Agent-Name": dispatch_agent_name(),
     }
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
