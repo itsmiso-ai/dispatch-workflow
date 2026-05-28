@@ -23,6 +23,7 @@ scripts/*
 
 # Dispatch workflow scripts.
 !scripts/dispatch_reporter.py
+!scripts/audit_decompose.py
 !scripts/dispatch_worker_preflight.py
 !scripts/issue_lane_judge.py
 !scripts/project_groom.py

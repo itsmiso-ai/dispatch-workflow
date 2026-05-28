@@ -70,12 +70,12 @@ Return ONLY compact JSON with this exact schema:
 
 Lane definitions:
 - normal: concrete, scoped, testable implementation work suitable for the self-hosted 35B worker.
-- escalated: requires GPT-level judgment before/during work: audit parent decomposition, architecture/security/API/auth boundary design, database/schema migration strategy, distributed/cross-service design, ambiguous product behavior, broad refactor with unclear safe slice, explicit RFC/design/alternatives decision.
+- escalated: requires GPT-level judgment before/during work: architecture/security/API/auth boundary design, database/schema migration strategy, distributed/cross-service design, ambiguous product behavior, broad refactor with unclear safe slice, explicit RFC/design/alternatives decision.
 - backlog: not actionable yet, placeholder, missing enough detail, already decomposed parent with no direct work.
 
 Rules:
 - Do not route to escalated just because labels include needs-escalation, needs-gpt, priority/p1, or because the issue came from an audit.
-- Do route audit parent/umbrella issues with broad findings to escalated for decomposition/design unless already decomposed.
+- Do not route audit parent/umbrella issues to escalated for decomposition. Leave them backlog; the deterministic audit-decomposer workflow owns child issue creation.
 - Documentation, tests, CI, lint, release/version drift, bounded backend/frontend fixes, and concrete follow-up issues usually go normal.
 - If the issue already chooses a reasonable implementation approach and has acceptance criteria, prefer normal.
 - If confidence is low, choose backlog rather than guessing.

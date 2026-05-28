@@ -56,7 +56,9 @@ If Dispatch returns active work:
 1. Verify the lane matches the worker lane.
 2. Obey `nextAction` exactly.
 3. Do one bounded step.
-4. Update Dispatch checkpoint/finish/status.
+4. After the step, update Dispatch **both**:
+   - `dispatch_work_update.py checkpoint --agent $DISPATCH_AGENT_NAME --checkpoint <STEP_CHECKPOINT> --summary "..."`
+   - `dispatch_work_update.py status --agent $DISPATCH_AGENT_NAME --issue-id <id> --repo <repo> --issue-number <num> --status <status>`
 5. Stop.
 
 If lane is missing or mismatched, end:
@@ -71,10 +73,23 @@ After code changes:
 3. push
 4. open/update PR
 5. verify with `gh pr view`
-6. update Dispatch to `status/in-review` or checkpoint/finish
+6. Update Dispatch in this exact order:
+   a. `dispatch_work_update.py checkpoint --agent $DISPATCH_AGENT_NAME --checkpoint PR_OPENED --summary "Opened PR #N for <repo>#<issue>"`
+   b. `dispatch_work_update.py status --agent $DISPATCH_AGENT_NAME --issue-id <id> --repo <repo> --issue-number <num> --status in-review`
 7. stop
 
 Never end after local commit only.
+
+## Dispatch Update Rules
+
+- **Checkpoint** (`/api/agent-work/checkpoint`): tracks active-work progress only.
+  Valid values: `CLAIMED`, `REPO_PREPARED`, `BRANCH_CREATED`, `CHANGES_MADE`,
+  `TESTS_RUNNING`, `PR_OPENED`, `DONE`, `BLOCKED`.
+  **Do NOT use checkpoint to set issue status** (e.g. never `--checkpoint in-review`).
+- **Status** (`/api/issues/status`): sets issue status label.
+  Use `--status in-review` after opening a PR.
+  **Do NOT use status to report work progress** (e.g. never `--status PR_OPENED`).
+- Use `dispatch_work_update.py` for both — never hand-roll the JSON.
 
 ## PR Body
 

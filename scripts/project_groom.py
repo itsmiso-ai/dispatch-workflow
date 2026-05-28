@@ -464,7 +464,7 @@ Return ONLY compact JSON with this exact schema:
 Rules:
 - "ready" means concrete, scoped, and safe for a normal worker to implement.
 - "escalated" means actionable but needs higher-judgment implementation/design/security/API review.
-- "decompose" means this is an umbrella/audit parent and should become smaller child issues.
+- "decompose" means this is an umbrella/audit parent that should stay backlog until the deterministic audit-decomposer workflow creates child issues.
 - "needs-info" means a human/repo owner must clarify missing requirements.
 - "needs-human" means policy/security/product judgment is required before agent work.
 - "keep-backlog" means intentionally parked; provide a concrete nextAction and why.
