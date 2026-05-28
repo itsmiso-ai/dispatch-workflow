@@ -37,7 +37,7 @@ RENOVATE_TITLE_RE = re.compile(r"(?:dependency dashboard|^update (?:dependency|i
 # Conclusions that indicate a check run definitively failed.
 FAILED_CHECK_CONCLUSIONS = frozenset({"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"})
 
-# Maximum active-work items to inspect per preflight run.
+# Maximum PRs to check per preflight run.
 ACTIVE_FOLLOWUP_CAP = 10
 
 
@@ -189,6 +189,14 @@ def _gh_binary() -> str:
     return GH
 
 
+def _repo_of(issue: dict[str, Any]) -> str | None:
+    """Extract the full repo name (owner/name) from a Dispatch issue object."""
+    repo = issue.get("repository")
+    if isinstance(repo, dict):
+        return repo.get("fullName")
+    return issue.get("repoFullName")
+
+
 def pr_fix_next(lane: str, agent_name: str) -> dict[str, Any] | None:
     env = os.environ.copy()
     env["DISPATCH_AGENT_NAME"] = agent_name
@@ -333,16 +341,10 @@ def active_followup_check_pr_gh(repo: str, pr_number: int) -> dict[str, Any] | N
         evidence["merge_dirty"] = True
 
     # BLOCKED = merge blocked by branch protection, pending reviews, etc.
-    # Not actionable by itself — only counts if paired with concrete evidence
+    # Not actionable by itself — only counts when paired with concrete evidence
     # (failing checks or CHANGES_REQUESTED) that the worker can act on.
     if merge_state == "BLOCKED" and (failing_checks or evidence.get("changes_requested")):
         evidence["merge_blocked"] = "BLOCKED"
-
-    # BEHIND = branch needs rebase; only counts as evidence if paired with
-    # failing checks (a clean behind is routine, not urgent)
-    if merge_state == "BEHIND" and failing_checks:
-        evidence["behind_with_failing"] = True
-        evidence["merge_blocked"] = merge_state
 
     # BEHIND = branch needs rebase; only counts as evidence if paired with
     # failing checks (a clean behind is routine, not urgent)
@@ -352,85 +354,151 @@ def active_followup_check_pr_gh(repo: str, pr_number: int) -> dict[str, Any] | N
     return evidence if evidence else None
 
 
+def _resolve_pr_url_for_issue(repo: str, issue_number: int, agent_work_by_issue: dict[str, str]) -> tuple[str | None, int | None]:
+    """Resolve a PR URL for a Dispatch issue.
+
+    Resolution order:
+    1. AgentWork prUrl (if a matching AgentWork record exists)
+    2. gh issue view --json closedByPullRequestsReferences (linked PRs from issue body)
+
+    Returns (pr_url, pr_number) or (None, None).
+    Does not invent PR URLs.
+    """
+    key = f"{repo}#{issue_number}"
+
+    # 1. Prefer AgentWork prUrl — it's the most reliable source
+    pr_url = agent_work_by_issue.get(key)
+    if pr_url:
+        pr_match = re.search(r"/pull/(\d+)", str(pr_url))
+        if pr_match:
+            return pr_url, int(pr_match.group(1))
+
+    # 2. Fall back to gh issue view for linked PRs
+    bin_gh = _gh_binary()
+    cmd = [
+        bin_gh, "issue", "view", str(issue_number),
+        "--repo", repo,
+        "--json", "closedByPullRequestsReferences",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout)
+            refs = data.get("closedByPullRequestsReferences") or []
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                ref_url = ref.get("url", "")
+                ref_number = ref.get("number")
+                # Only consider PRs in the same repo
+                if ref_url and f"/{repo}/pull/" in ref_url:
+                    return ref_url, ref_number
+                # If URL is absent but number exists, construct it
+                if ref_number:
+                    return f"https://github.com/{repo}/pull/{ref_number}", ref_number
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    return None, None
+
+
 def active_followup_pass(lane: str, agent_name: str) -> dict[str, Any] | None:
     """Evidence-based active follow-up pass for in-progress/in-review items owned by this agent.
 
-    Queries /api/agent-work for all active work items belonging to this agent,
-    checks each (up to ACTIVE_FOLLOWUP_CAP) for:
+    Starts from /api/issues (which has labels, lane, agent info) and cross-references
+    with /api/agent-work for prUrl when available. Falls back to gh issue view for
+    linked PRs when no AgentWork record exists.
+
+    Checks each (up to ACTIVE_FOLLOWUP_CAP) for:
       - Dispatch status/in-progress or status/in-review
-      - A PR URL attached to the work item
+      - An agent/{agent_name} label
+      - A discoverable PR URL (from AgentWork or linked PRs)
       - Actionable GitHub PR evidence (failing checks, merge conflicts, CHANGES_REQUESTED)
 
     Returns an action:"active-follow-up" packet for the first item with concrete
     evidence, or None to fall through to fresh queue selection.
 
     Guarantees:
-      - Only inspects this agent's own work (agent-scoped API query).
+      - Only inspects this agent's own issues (agent label filter).
       - Only considers status/in-progress or status/in-review on Dispatch.
       - Never mutates issue status or labels.
       - Never claims work.
       - Returns only when concrete evidence exists; otherwise falls through.
-      - Caps inspection at ACTIVE_FOLLOWUP_CAP items per run.
+      - Caps inspection at ACTIVE_FOLLOWUP_CAP PRs per run.
     """
-    # Fetch ALL active work items for this agent (not just the single most recent lease)
-    data = dispatch_request(f"/api/agent-work?agent={agent_name}&include_stale=false", timeout=20)
-    if not isinstance(data, dict):
-        return None
-
-    items = data.get("activeWork", [])
-    if not isinstance(items, list) or len(items) == 0:
-        return None
-
-    gh_token = os.environ.get("GITHUB_TOKEN", "")
-    # gh CLI uses its own auth; GITHUB_TOKEN is not needed for gh pr view.
-    # But if gh itself isn't available, skip entirely.
+    # Require gh CLI
     if not shutil.which(_gh_binary()):
         return None
 
-    # Cap to prevent scanning the whole universe
-    for item in items[:ACTIVE_FOLLOWUP_CAP]:
-        if not isinstance(item, dict):
+    # Fetch all open issues from Dispatch (has labels, lane, agent info)
+    all_issues = dispatch_request("/api/issues?limit=300", timeout=20)
+    if not isinstance(all_issues, list):
+        return None
+
+    # Fetch AgentWork records for prUrl cross-reference
+    aw_data = dispatch_request(f"/api/agent-work?agent={agent_name}&include_stale=false", timeout=20)
+    agent_work_by_issue: dict[str, str] = {}
+    if isinstance(aw_data, dict):
+        for item in aw_data.get("activeWork", []):
+            if not isinstance(item, dict):
+                continue
+            repo = str(item.get("repoFullName") or "")
+            num = item.get("issueNumber")
+            pr_url = item.get("prUrl")
+            if repo and num and pr_url:
+                agent_work_by_issue[f"{repo}#{num}"] = pr_url
+
+    # Filter to this agent's in-progress/in-review issues in the requested lane
+    candidates: list[dict[str, Any]] = []
+    agent_label = f"agent/{agent_name}".lower()
+    for issue in all_issues:
+        if not isinstance(issue, dict):
+            continue
+        if is_renovate(issue):
             continue
 
-        # Must belong to this agent (belt-and-suspenders; API already filters)
-        if (item.get("agentName") or "").lower() != agent_name.lower():
+        # Must have this agent's label
+        if agent_label not in labels_of(issue):
             continue
 
-        repo = str(item.get("repoFullName") or "")
-        issue_number_raw = item.get("issueNumber")
-        try:
-            issue_number = int(issue_number_raw) if issue_number_raw is not None else None
-        except (TypeError, ValueError):
-            continue
-
-        if not repo or issue_number is None:
-            continue
-
-        # Find the Dispatch issue to check labels/status
-        issue = find_dispatch_issue(repo, issue_number)
-        if not issue:
-            continue
-
-        # Only consider items in status/in-progress or status/in-review on Dispatch
+        # Must be in-progress or in-review
         dispatch_status = status_of(issue)
         if dispatch_status not in {"status/in-progress", "status/in-review"}:
             continue
 
-        # Verify this item belongs to the requested lane
+        # Must match the requested lane (if lane is set)
         item_lane = lane_of(issue)
         if item_lane is not None and item_lane != lane:
             continue
 
-        # Must have a PR URL attached
-        pr_url = item.get("prUrl")
-        if not pr_url:
+        candidates.append(issue)
+
+    if not candidates:
+        return None
+
+    # Check up to ACTIVE_FOLLOWUP_CAP candidates
+    checked = 0
+    for issue in candidates:
+        if checked >= ACTIVE_FOLLOWUP_CAP:
+            break
+
+        repo = _repo_of(issue)
+        issue_number = issue.get("number")
+        if not repo or issue_number is None:
             continue
 
-        # Extract PR number from URL like https://github.com/owner/repo/pull/123
-        pr_match = re.search(r"/pull/(\d+)", str(pr_url))
-        if not pr_match:
+        try:
+            issue_number = int(issue_number)
+        except (TypeError, ValueError):
             continue
-        pr_number = int(pr_match.group(1))
+
+        # Resolve PR URL — prefer AgentWork, fall back to gh issue view
+        pr_url, pr_number = _resolve_pr_url_for_issue(repo, issue_number, agent_work_by_issue)
+        if not pr_url or pr_number is None:
+            # No linked PR for this issue; can't check PR evidence
+            continue
+
+        checked += 1
 
         # Check PR for actionable evidence
         evidence = active_followup_check_pr_gh(repo, pr_number)
@@ -443,7 +511,8 @@ def active_followup_pass(lane: str, agent_name: str) -> dict[str, Any] | None:
             "lane": lane,
             "agentName": agent_name,
             "evidence": evidence,
-            "activeWork": item,
+            "prUrl": pr_url,
+            "prNumber": pr_number,
             "issue": issue,
         }
 
