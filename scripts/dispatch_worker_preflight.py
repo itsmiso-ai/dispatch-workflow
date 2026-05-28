@@ -520,7 +520,7 @@ def active_followup_pass(lane: str, agent_name: str) -> dict[str, Any] | None:
 
 
 def queue_items(lane: str, agent_name: str) -> list[dict[str, Any]]:
-    data = dispatch_request(f"/api/agents/{agent_name}/queue?lane={lane}", timeout=20)
+    data = dispatch_request(f"/api/agents/{agent_name}/queue?lane={lane}&includeClaimed=true", timeout=20)
     return data if isinstance(data, list) else []
 
 
