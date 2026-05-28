@@ -499,21 +499,43 @@ def _run_llm(prompt: str, model: str | None, command: str | None, timeout: int) 
         proc = subprocess.run(
             command, input=prompt, capture_output=True, text=True, shell=True, timeout=timeout,
         )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "LLM command failed").strip()[:1000])
+        return proc.stdout.strip()
     else:
         if GPT_MODEL_RE.search(model or ""):
             raise RuntimeError("Refusing to use a GPT model for backlog grooming.")
-        proc = subprocess.run(
-            ["openclaw", "capability", "model", "run", "--gateway", "--model", model, "--prompt", prompt],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "LLM command failed").strip()[:1000])
-    return proc.stdout.strip()
+        # Call litellm proxy directly via HTTP instead of openclaw capability model run
+        import requests as _http_lib
+        litellm_url = os.environ.get("LITELLM_PROXY_URL", "http://litellm.llm:4000/v1/chat/completions")
+        litellm_key = os.environ.get("LITELLM_API_KEY", "")
+        # Translate litellm/ prefix for proxy
+        # Translate model name for litellm proxy
+        litellm_model = (model or "self-hosted").replace("litellm/", "")
+        try:
+            resp = _http_lib.post(
+                litellm_url,
+                headers={"Authorization": f"Bearer {litellm_key}", "Content-Type": "application/json"},
+                json={"model": litellm_model, "messages": [{"role": "user", "content": prompt}]},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            msg = result["choices"][0]["message"]
+            text = msg.get("content") or msg.get("reasoning_content") or ""
+            return text.strip()
+        except _http_lib.exceptions.Timeout:
+            raise RuntimeError(f"LLM request timed out after {timeout}s")
+        except _http_lib.exceptions.HTTPError as e:
+            body = e.response.text[:500] if e.response is not None else str(e)
+            raise RuntimeError(f"LLM HTTP {e.response.status_code}: {body}")
+        except Exception as e:
+            raise RuntimeError(f"LLM HTTP failed: {e}")
 
 
-def run_backlog_grooming_llm(prompt: str, timeout: int = 240) -> str:
+def run_backlog_grooming_llm(prompt: str, timeout: int = 900) -> str:
     primary_model = BACKLOG_GROOMING_MODEL
-    fallback_model = "litellm-anthropic/MiniMax-M2.7"
+    fallback_model = "litellm/self-hosted"
     try:
         return _run_llm(prompt, primary_model, BACKLOG_GROOMING_COMMAND or None, timeout)
     except RuntimeError as e:
