@@ -35,9 +35,18 @@ Preflight actions:
 - If no claimable escalated work exists, end exactly:
   `Escalated lane is clear.`
 
+## Audit / Umbrella Issues
+
+**Do not decompose audit or umbrella issues.** Audit/umbrella decomposition
+is handled by the weekly audit sub-agent + audit-decomposer workflow in the
+mission-control-workflow repo. Varka focuses on implementation and design
+work only.
+
+Skip any issue labeled `audit` or `needs-gpt` that is an umbrella/parent with
+multiple findings.
+
 ## Valid Escalated Actions
 
-- Decompose a broad audit/umbrella issue into concrete child issues.
 - Implement one focused high-impact fix and open/update a PR.
 - Write one concrete design/RFC comment when implementation is not safe yet.
 
@@ -45,7 +54,6 @@ Preflight actions:
 
 End exactly one:
 - `Escalated lane is clear.`
-- `Done. Decomposed {repo} #{number}: {child_urls}.`
 - `Done. PR #{pr} opened for {repo} #{number}: {pr_url}.`
 - `Done. PR #{pr} updated for {repo}: {pr_url}.`
 - `Stuck: {reason}.`

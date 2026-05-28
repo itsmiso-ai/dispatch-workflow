@@ -1072,7 +1072,7 @@ def classify_audit_issue(issue: dict[str, Any]) -> tuple[str, str, str]:
     if audit_already_decomposed(issue):
         return "backlog", "high", "Audit parent already decomposed; actionable work lives on follow-up issues"
     if has_large_audit_findings(issue):
-        return "escalated", "high", "Weekly audit findings require GPT decomposition into follow-up issues"
+        return "backlog", "high", "Audit umbrella — awaiting audit-decomposer workflow (do not assign to escalated worker)"
     return "backlog", "medium", "Audit placeholder has no substantive findings yet"
 
 
