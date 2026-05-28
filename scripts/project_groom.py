@@ -993,8 +993,13 @@ def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
     Done is terminal and corresponds to a closed GitHub issue in Dispatch v0.3.
     Use Dispatch's status API so GitHub labels and the Dispatch cache remain in
     sync; do not edit status labels directly with `gh issue edit` here.
+
+    Checks live GitHub state before mutating: if the GitHub issue is closed,
+    status/done is correct and the issue is left alone. Only moves to backlog
+    when the GitHub issue is confirmed open.
     """
     reconciled = 0
+    skipped_closed = 0
     for issue in issues:
         if not is_open(issue):
             continue
@@ -1005,11 +1010,25 @@ def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
         number = issue_number(issue)
         if not repo or number is None:
             continue
+        # Verify live GitHub state before mutating.
+        # Dispatch cache may be stale on closure; trust GitHub over cache.
+        snapshot = github_issue_snapshot(repo, number)
+        if snapshot is None:
+            print(f"  [{repo} #{number}] could not fetch live state; skipping stale done reconciliation")
+            continue
+        live_state = str(snapshot.get("state") or "").lower()
+        if live_state != "open":
+            # GitHub says closed — status/done is correct, do not move to backlog.
+            print(f"  [{repo} #{number}] GitHub closed with status/done; skipping (done is correct)")
+            skipped_closed += 1
+            continue
         print(f"  [{repo} #{number}] open issue has stale status/done")
         if set_dispatch_status(issue, "backlog", "open issue cannot be Done"):
             reconciled += 1
         else:
             print("      -> failed to reconcile stale Done status")
+    if skipped_closed:
+        print(f"  Skipped {skipped_closed} closed issue(s) with status/done (correct state)")
     return reconciled
 
 
