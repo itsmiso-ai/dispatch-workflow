@@ -36,6 +36,7 @@ Preflight actions:
 - `pr-fix`: update the returned PR only.
 - `resume-active-work`: obey returned `nextAction` exactly.
 - `claim-ready-issue`: implement returned claimed Ready issue.
+- `active-follow-up`: act on evidence — fix failing checks, address requested changes, or resolve merge conflict on the returned PR.
 
 If preflight says `stuck`, do not guess past it.
 

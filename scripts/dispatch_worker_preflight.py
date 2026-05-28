@@ -4,6 +4,7 @@
 This script does the queue plumbing that should not depend on an LLM:
 - read PR-fix queue
 - read/verify active work
+- evidence-based active follow-up pass for in-progress/in-review owned items
 - select one ready queue item
 - optionally claim the selected issue
 
@@ -32,6 +33,12 @@ LANE_AGENT_DEFAULTS = {
     "escalated": "saffron-escalated",
 }
 RENOVATE_TITLE_RE = re.compile(r"(?:dependency dashboard|^update (?:dependency|image|deps?)|renovate)", re.I)
+
+# Conclusions that indicate a check run definitively failed.
+FAILED_CHECK_CONCLUSIONS = frozenset({"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"})
+
+# Maximum active-work items to inspect per preflight run.
+ACTIVE_FOLLOWUP_CAP = 10
 
 
 def dispatch_base_url() -> str:
@@ -171,6 +178,17 @@ def required_tools_ok() -> tuple[bool, list[str]]:
     return not missing, missing
 
 
+def _gh_binary() -> str:
+    """Resolve the gh CLI binary path."""
+    gh = os.environ.get("GH", "")
+    if gh and os.path.exists(gh):
+        return gh
+    candidate = shutil.which("gh")
+    if candidate:
+        return candidate
+    return GH
+
+
 def pr_fix_next(lane: str, agent_name: str) -> dict[str, Any] | None:
     env = os.environ.copy()
     env["DISPATCH_AGENT_NAME"] = agent_name
@@ -241,6 +259,197 @@ def active_work_packet(lane: str, agent_name: str) -> dict[str, Any] | None:
     }
 
 
+def active_followup_check_pr_gh(repo: str, pr_number: int) -> dict[str, Any] | None:
+    """Check a PR for evidence that it needs follow-up action using gh CLI.
+
+    Uses `gh pr view --json` to get the current aggregate PR state:
+    reviewDecision, statusCheckRollup, mergeable, mergeStateStatus, state, isDraft.
+
+    Returns an evidence dict if actionable evidence is found, or None otherwise.
+    Each GitHub API failure is non-fatal — the function returns None for that
+    lookup, allowing the caller to try the next item.
+    """
+    bin_gh = _gh_binary()
+    cmd = [
+        bin_gh, "pr", "view", str(pr_number),
+        "--repo", repo,
+        "--json", "reviewDecision,statusCheckRollup,mergeable,mergeStateStatus,state,isDraft",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return None
+
+    if proc.returncode != 0:
+        return None
+
+    try:
+        pr = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    # Skip closed / merged PRs — no follow-up needed
+    if pr.get("state") not in ("OPEN",):
+        return None
+
+    # Skip draft PRs — rarely need immediate attention
+    if pr.get("isDraft") is True:
+        return None
+
+    evidence: dict[str, Any] = {}
+
+    # ── Review decision (current aggregate state, not historical reviews) ──
+    review_decision = (pr.get("reviewDecision") or "").upper()
+    if review_decision == "CHANGES_REQUESTED":
+        evidence["changes_requested"] = True
+
+    # ── Check runs (statusCheckRollup includes both CheckRun and StatusContext) ──
+    status_rollup = pr.get("statusCheckRollup") or []
+    failing_checks: list[dict[str, str]] = []
+    for check in status_rollup:
+        if not isinstance(check, dict):
+            continue
+        # CheckRun entries have "conclusion"; StatusContext entries have "state"
+        conclusion = (check.get("conclusion") or "").upper()
+        state = (check.get("state") or "").upper()
+        name = check.get("name") or check.get("context") or "unknown"
+        if conclusion in FAILED_CHECK_CONCLUSIONS:
+            failing_checks.append({"name": name, "conclusion": conclusion})
+        elif state in ("ERROR", "FAILURE"):
+            failing_checks.append({"name": name, "conclusion": state})
+    if failing_checks:
+        evidence["failing_checks"] = failing_checks[:10]
+
+    # ── Merge conflict detection (clear conflict states only) ──
+    mergeable = (pr.get("mergeable") or "").upper()
+    merge_state = (pr.get("mergeStateStatus") or "").upper()
+
+    # CONFLICTING = genuine merge conflict
+    if mergeable == "CONFLICTING":
+        evidence["has_merge_conflict"] = True
+
+    # DIRTY = GitHub detected merge conflict in the branch
+    if merge_state == "DIRTY":
+        evidence["merge_dirty"] = True
+
+    # BLOCKED = merge blocked by branch protection, pending reviews, etc.
+    # Not actionable by itself — only counts if paired with concrete evidence
+    # (failing checks or CHANGES_REQUESTED) that the worker can act on.
+    if merge_state == "BLOCKED" and (failing_checks or evidence.get("changes_requested")):
+        evidence["merge_blocked"] = "BLOCKED"
+
+    # BEHIND = branch needs rebase; only counts as evidence if paired with
+    # failing checks (a clean behind is routine, not urgent)
+    if merge_state == "BEHIND" and failing_checks:
+        evidence["behind_with_failing"] = True
+        evidence["merge_blocked"] = merge_state
+
+    # BEHIND = branch needs rebase; only counts as evidence if paired with
+    # failing checks (a clean behind is routine, not urgent)
+    if merge_state == "BEHIND" and failing_checks:
+        evidence["behind_with_failing"] = True
+
+    return evidence if evidence else None
+
+
+def active_followup_pass(lane: str, agent_name: str) -> dict[str, Any] | None:
+    """Evidence-based active follow-up pass for in-progress/in-review items owned by this agent.
+
+    Queries /api/agent-work for all active work items belonging to this agent,
+    checks each (up to ACTIVE_FOLLOWUP_CAP) for:
+      - Dispatch status/in-progress or status/in-review
+      - A PR URL attached to the work item
+      - Actionable GitHub PR evidence (failing checks, merge conflicts, CHANGES_REQUESTED)
+
+    Returns an action:"active-follow-up" packet for the first item with concrete
+    evidence, or None to fall through to fresh queue selection.
+
+    Guarantees:
+      - Only inspects this agent's own work (agent-scoped API query).
+      - Only considers status/in-progress or status/in-review on Dispatch.
+      - Never mutates issue status or labels.
+      - Never claims work.
+      - Returns only when concrete evidence exists; otherwise falls through.
+      - Caps inspection at ACTIVE_FOLLOWUP_CAP items per run.
+    """
+    # Fetch ALL active work items for this agent (not just the single most recent lease)
+    data = dispatch_request(f"/api/agent-work?agent={agent_name}&include_stale=false", timeout=20)
+    if not isinstance(data, dict):
+        return None
+
+    items = data.get("activeWork", [])
+    if not isinstance(items, list) or len(items) == 0:
+        return None
+
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    # gh CLI uses its own auth; GITHUB_TOKEN is not needed for gh pr view.
+    # But if gh itself isn't available, skip entirely.
+    if not shutil.which(_gh_binary()):
+        return None
+
+    # Cap to prevent scanning the whole universe
+    for item in items[:ACTIVE_FOLLOWUP_CAP]:
+        if not isinstance(item, dict):
+            continue
+
+        # Must belong to this agent (belt-and-suspenders; API already filters)
+        if (item.get("agentName") or "").lower() != agent_name.lower():
+            continue
+
+        repo = str(item.get("repoFullName") or "")
+        issue_number_raw = item.get("issueNumber")
+        try:
+            issue_number = int(issue_number_raw) if issue_number_raw is not None else None
+        except (TypeError, ValueError):
+            continue
+
+        if not repo or issue_number is None:
+            continue
+
+        # Find the Dispatch issue to check labels/status
+        issue = find_dispatch_issue(repo, issue_number)
+        if not issue:
+            continue
+
+        # Only consider items in status/in-progress or status/in-review on Dispatch
+        dispatch_status = status_of(issue)
+        if dispatch_status not in {"status/in-progress", "status/in-review"}:
+            continue
+
+        # Verify this item belongs to the requested lane
+        item_lane = lane_of(issue)
+        if item_lane is not None and item_lane != lane:
+            continue
+
+        # Must have a PR URL attached
+        pr_url = item.get("prUrl")
+        if not pr_url:
+            continue
+
+        # Extract PR number from URL like https://github.com/owner/repo/pull/123
+        pr_match = re.search(r"/pull/(\d+)", str(pr_url))
+        if not pr_match:
+            continue
+        pr_number = int(pr_match.group(1))
+
+        # Check PR for actionable evidence
+        evidence = active_followup_check_pr_gh(repo, pr_number)
+        if not evidence:
+            continue
+
+        return {
+            "action": "active-follow-up",
+            "terminal": None,
+            "lane": lane,
+            "agentName": agent_name,
+            "evidence": evidence,
+            "activeWork": item,
+            "issue": issue,
+        }
+
+    return None
+
+
 def queue_items(lane: str, agent_name: str) -> list[dict[str, Any]]:
     data = dispatch_request(f"/api/agents/{agent_name}/queue?lane={lane}", timeout=20)
     return data if isinstance(data, list) else []
@@ -296,6 +505,7 @@ def build_packet(lane: str, agent_name: str, *, claim: bool) -> dict[str, Any]:
             "missingTools": missing,
         }
 
+    # 1. PR-fix queue — highest priority
     pr_fix = pr_fix_next(lane, agent_name)
     if pr_fix:
         return {
@@ -306,10 +516,17 @@ def build_packet(lane: str, agent_name: str, *, claim: bool) -> dict[str, Any]:
             "item": pr_fix,
         }
 
+    # 2. Resume active work — resumable checkpoint existing on this agent's issue
     active = active_work_packet(lane, agent_name)
     if active:
         return active
 
+    # 3. Evidence-based active follow-up — in-progress/in-review items needing PR attention
+    followup = active_followup_pass(lane, agent_name)
+    if followup:
+        return followup
+
+    # 4. Fresh queue — new ready work
     items = queue_items(lane, agent_name)
     selected = select_queue_item(items, lane, agent_name)
     if not selected:
