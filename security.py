@@ -17,7 +17,7 @@ from flask import jsonify, request, session
 try:
     import redis
 except ImportError:  # pragma: no cover - optional dependency in some environments
-    redis = None
+    redis = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
