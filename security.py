@@ -144,6 +144,10 @@ def _build_primary_limiter() -> RedisRateLimiter | InMemoryRateLimiter:
     redis_prefix = os.environ.get("RATE_LIMIT_PREFIX", "miso-gallery:ratelimit")
 
     if not redis_url:
+        logger.warning(
+            "No REDIS_URL or RATE_LIMIT_REDIS_URL configured; "
+            "using in-memory rate limiter (not safe for multi-worker deployments)"
+        )
         return FALLBACK_LIMITER
 
     try:
