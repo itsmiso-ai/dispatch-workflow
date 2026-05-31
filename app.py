@@ -1175,7 +1175,7 @@ def run_configured_task(payload: dict[str, object]) -> tuple[dict[str, object], 
         return {"error": "configured task produced an empty command"}, 500
 
     try:
-        timeout = max(1, min(600, int(os.environ.get("WEBHOOK_TASK_TIMEOUT", "30"))))
+        timeout = max(1, min(120, int(os.environ.get("WEBHOOK_TASK_TIMEOUT", "30"))))
     except ValueError:
         timeout = 30
 
