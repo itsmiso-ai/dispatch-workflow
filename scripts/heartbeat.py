@@ -44,50 +44,52 @@ def main() -> int:
 
     started_at = utc_now()
     status = "ok"
+    warnings = 0
     combined_output: list[str] = []
 
     steps = [
         (
             "GitHub follow-up watcher",
             ["python3", str(ROOT / "scripts/github_followup_watcher.py")],
+            True,
         ),
         (
-            "Dispatch backlog sync",
+            "Dispatch sync",
             ["python3", str(ROOT / "scripts/project_backlog_sync.py")],
+            False,
         ),
         (
             "Deterministic Dispatch grooming",
-            ["python3", str(ROOT / "scripts/project_groom.py")],
+            ["python3", str(ROOT / "scripts/project_groom.py"), "--no-sync"],
+            True,
         ),
     ]
     if not args.skip_llm_grooming:
         steps.append(
             (
-                "Bounded LLM backlog enrichment",
-                [
-                    "python3",
-                    str(ROOT / "scripts/project_groom.py"),
-                    "--no-sync",
-                    "--groom-backlog",
-                    "--groom-backlog-use-llm",
-                    "--groom-backlog-only",
-                    "--groom-backlog-apply",
-                    "--groom-backlog-max",
-                    "3",
-                ],
+                "Bounded self-hosted backlog grooming",
+                ["python3", str(ROOT / "scripts/backlog_groomer.py"), "--max", "3"],
+                False,
             )
         )
 
-    for label, command in steps:
+    for label, command, fatal in steps:
         code, output = run_step(label, command)
         combined_output.append(output)
         if code != 0:
-            status = "error"
+            if fatal:
+                status = "error"
+            else:
+                warnings += 1
+                if status == "ok":
+                    status = "warning"
 
     finished_at = utc_now()
-    summary = "Heartbeat ran follow-up watcher, sync, deterministic grooming, and bounded LLM issue enrichment."
+    summary = "Heartbeat ran follow-up watcher, sync, deterministic grooming, and bounded self-hosted backlog grooming."
     if args.skip_llm_grooming:
         summary = "Heartbeat ran follow-up watcher, sync, and deterministic grooming."
+    if warnings:
+        summary = f"{summary} Non-fatal warning steps: {warnings}."
 
     report_cmd = [
         "python3",
@@ -107,7 +109,7 @@ def main() -> int:
         report_cmd.extend(urls)
 
     subprocess.run(report_cmd, cwd=ROOT, env=os.environ.copy())
-    return 0 if status == "ok" else 1
+    return 1 if status == "error" else 0
 
 
 if __name__ == "__main__":

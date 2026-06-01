@@ -28,6 +28,8 @@ CRON_JOBS_FILE = "/home/node/.openclaw/cron/jobs.json"
 WISHLIST_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
 GPT_AUDIT_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
+NORMAL_WORKER_AGENT = os.environ.get("DISPATCH_NORMAL_AGENT", "saffron-normal")
+ESCALATED_WORKER_AGENT = os.environ.get("DISPATCH_ESCALATED_AGENT", "saffron-escalated")
 
 DEFAULT_TRACKED_REPOS = [
     "misospace/miso-chat",
@@ -185,10 +187,11 @@ def get_all_dispatch_issues() -> list[dict[str, Any]]:
 
 
 def get_dispatch_queue(lane: str) -> list[dict[str, Any]]:
+    agent = ESCALATED_WORKER_AGENT if normalize_lane(lane) == "escalated" else NORMAL_WORKER_AGENT
     try:
-        data = dispatch_request(f"/api/agents/saffron/queue?lane={lane}")
+        data = dispatch_request(f"/api/agents/{agent}/queue?lane={lane}")
     except Exception as e:
-        print(f"  [!] Dispatch {lane} queue check failed: {e}")
+        print(f"  [!] Dispatch {lane} queue check failed for {agent}: {e}")
         return []
     return data if isinstance(data, list) else []
 

@@ -13,6 +13,7 @@ wishlist workers can update the existing branch instead of creating duplicate PR
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from typing import Any
 from pr_fix_queue import enqueue as enqueue_pr_fix, load_state as load_pr_fix_queue
 
 AUTHOR = "itsmiso-ai"
+GH = os.environ.get("GH") or "/home/node/.local/bin/gh"
 STATE_PATH = Path("/home/node/.openclaw/workspace-saffron/.state/github_followup_watcher.json")
 SELF_LOGINS = {AUTHOR, "github-actions[bot]"}
 FIX_AUTHOR_ALLOWLIST = {AUTHOR}
@@ -56,7 +58,7 @@ AMBIGUOUS_COMMENT_PATTERNS = [
 
 
 def gh_json(args: list[str]) -> Any:
-    cmd = ["gh", *args]
+    cmd = [GH, *args]
     out = subprocess.check_output(cmd, text=True)
     return json.loads(out)
 
