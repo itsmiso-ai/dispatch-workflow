@@ -46,12 +46,12 @@ For Noelle/Varka style work, prefer deterministic local preflight before model
 work:
 
 ```bash
-DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane normal --claim --json
-DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
+DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/dispatch_worker_preflight.py --lane normal --claim --json
+DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
 ```
 
 Validate terminal worker text when practical:
 
 ```bash
-printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/scripts/worker_result_guard.py
+printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/worker_result_guard.py
 ```
