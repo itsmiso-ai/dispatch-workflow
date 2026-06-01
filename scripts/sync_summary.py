@@ -8,7 +8,10 @@ import subprocess
 import sys
 
 result = subprocess.run(
-    ["python3", "/home/node/.openclaw/workspace-saffron/scripts/project_backlog_sync.py"],
+    [
+        "python3",
+        "/home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/project_backlog_sync.py",
+    ],
     capture_output=True,
     text=True,
     timeout=120,

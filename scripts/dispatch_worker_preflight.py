@@ -202,7 +202,7 @@ def pr_fix_next(lane: str, agent_name: str) -> dict[str, Any] | None:
     env["DISPATCH_AGENT_NAME"] = agent_name
     cmd = [
         "python3",
-        "/home/node/.openclaw/workspace-saffron/scripts/pr_fix_queue.py",
+        "/home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/pr_fix_queue.py",
         "next",
         "--lane",
         lane,

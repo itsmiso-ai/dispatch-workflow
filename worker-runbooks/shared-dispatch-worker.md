@@ -106,5 +106,5 @@ End only with a lane-specific final form from the lane runbook. Validate final
 text when practical:
 
 ```bash
-printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/scripts/worker_result_guard.py
+printf '%s\n' "$FINAL_TEXT" | python3 /home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/worker_result_guard.py
 ```

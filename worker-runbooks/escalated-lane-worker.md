@@ -9,14 +9,14 @@ export DISPATCH_AGENT_NAME=saffron-escalated
 ```
 
 Read first:
-- `/home/node/.openclaw/workspace-saffron/worker-runbooks/shared-dispatch-worker.md`
+- `/home/node/.openclaw/workspace-saffron/mission-control-workflow/worker-runbooks/shared-dispatch-worker.md`
 
 ## Preflight
 
 Run deterministic preflight before model judgment:
 
 ```bash
-DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
+DISPATCH_AGENT_NAME=saffron-escalated python3 /home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/dispatch_worker_preflight.py --lane escalated --claim --json
 ```
 
 Preflight actions:
