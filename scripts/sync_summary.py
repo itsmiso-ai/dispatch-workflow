@@ -10,7 +10,7 @@ import sys
 result = subprocess.run(
     [
         "python3",
-        "/home/node/.openclaw/workspace-saffron/mission-control-workflow/scripts/project_backlog_sync.py",
+        "/home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/project_backlog_sync.py",
     ],
     capture_output=True,
     text=True,
