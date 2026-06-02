@@ -1287,25 +1287,29 @@ def main() -> int:
         )
         return 0
 
-    print("\n[*] Checking merged PR closures from GitHub...")
-    merged_prs = {}
-    for repo in TRACKED_REPOS:
-        merged_prs[repo] = get_merged_prs_for_repo(repo)
-        print(f"      {repo}: {len(merged_prs[repo])} merged PRs referencing issues")
-    closed = close_resolved_issues(issues, merged_prs)
-    print(f"  Closed issues: {closed}")
-
-    print("\n[*] Reconciling stale Done statuses on open issues...")
-    reconciled_statuses = reconcile_stale_done_statuses(issues)
-    print(f"  Reconciled stale Done statuses: {reconciled_statuses}")
-
-    closed_active_reconciled = reconcile_closed_issue_statuses(issues)
-    print(f"  Reconciled closed-active statuses: {closed_active_reconciled}")
-
-    if closed or reconciled_statuses or closed_active_reconciled:
-        print("\n[*] Re-syncing Dispatch after GitHub/status mutations...")
-        dispatch_sync()
-        issues = get_all_dispatch_issues()
+    print("\n[*] Dispatching GitHub reconciliation to backend...")
+    try:
+        reconcile_result = dispatch_request(
+            "/api/issues/reconcile",
+            method="POST",
+            payload={},
+            timeout=180,
+        )
+        closed = reconcile_result.get("issuesClosed", 0)
+        labels_changed = reconcile_result.get("labelsChanged", 0)
+        reconcilied_count = reconcile_result.get("issuesReconciled", 0)
+        print(f"  Repos: {reconcile_result.get('reposProcessed', len(TRACKED_REPOS))}")
+        print(f"  Issues reconciled: {reconcilied_count}")
+        print(f"  Issues closed: {closed}")
+        print(f"  Labels changed: {labels_changed}")
+        if reconcile_result.get("errors"):
+            for err in reconcile_result["errors"]:
+                print(f"  [!] Reconcile error: {err}")
+    except Exception as exc:
+        print(f"  [!] Dispatch reconcile call failed: {exc}")
+        closed = 0
+        labels_changed = 0
+        reconcilied_count = 0
 
     print("\n[*] Reconciling Dispatch lane assignments...")
     changed_lanes = reconcile_lanes(issues)
@@ -1340,9 +1344,8 @@ def main() -> int:
     print("\nSummary:")
     print(
         f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,"
-        f"{escalated_count} escalated_queue,{closed} closed,{reconciled_statuses} "
-        f"stale_done_reconciled,{closed_active_reconciled} closed_active_reconciled,"
-        f"{changed_lanes} lane_updates,{backlog_groomed} "
+        f"{escalated_count} escalated_queue,{closed} closed,"
+        f"{labels_changed} labels_changed,{changed_lanes} lane_updates,{backlog_groomed} "
         f"backlog_investigated,{backlog_promoted} backlog_applied,{backlog_surfaced} "
         "backlog_surfaced_not_ready"
     )
