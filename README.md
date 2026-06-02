@@ -16,6 +16,7 @@ This repo tracks Dispatch workflow files from the Saffron agent workspace:
 - Python scripts for heartbeat grooming, lane judging, backlog syncing
 - Bash/shell utility scripts
 - Workflow documentation and runbooks
+- Sanitized cron prompt templates for Dispatch-owned automation
 
 ## Excluded
 
@@ -28,6 +29,11 @@ The following are intentionally excluded and must never be committed:
 - Any file containing tokens, secrets, or credentials
 - Any OpenClaw agent config, session, or memory files
 - home-ops or dispatch app code
+
+Cron prompts may be versioned only as sanitized templates under
+`cron-prompts/`. Do not commit schedules, delivery targets, runtime state,
+channel IDs, token values, local operator-only prompts, or the raw
+`cron/jobs.json` file.
 
 ## Relationship to Dispatch App
 
@@ -52,6 +58,18 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `dispatch_work_update.py` | Update Dispatch checkpoints and issue status from worker sessions |
 | `research_before_task.py` | Research GitHub issues before implementing |
 | `sync_summary.py` | Compact Dispatch sync summary helper |
+
+## Cron Prompt Templates
+
+`cron-prompts/` contains public-safe source templates for Dispatch workflow
+cron prompts. These templates intentionally use placeholders such as
+`{{WORKFLOW_DIR}}`, `{{DISPATCH_NORMAL_AGENT}}`, and
+`{{BLOCKED_MERGE_REPOS}}` instead of live runtime values.
+
+The templates are documentation and review artifacts. Runtime cron jobs are
+still managed by `openclaw cron`; `cron/jobs.json` remains excluded because it
+contains schedules, delivery targets, model overrides, state, and other
+environment-specific data.
 
 ## Dispatch v0.3 Worker Semantics
 
