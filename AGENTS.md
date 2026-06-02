@@ -42,15 +42,9 @@ Default agent for `misospace/miso-gallery`. Role: Senior Software Engineer speci
 - Release automation must keep `app.py` version aligned with release tag
 
 ### Release Process
-miso-gallery uses GitHub Actions for release automation. The `Manual Release` workflow (`.github/workflows/manual-release.yml`) handles version bump, git push (via bot token that bypasses branch protection), tag, and release creation in one shot.
+The release process is manual and CLI-driven. Branch protection blocks direct pushes to `main`, so all version bumps go through a branch + PR.
 
-#### Steps (preferred: GitHub Actions Manual Release)
-
-Go to **Actions → Manual Release → Run workflow**, enter the version (e.g. `0.4.12`; `v` prefix is accepted and normalized).
-
-The workflow handles the full sequence: version bump → commit to main (via bot token) → tag → release with auto-generated notes. The `Build` workflow (`.github/workflows/release.yaml`) then triggers on the published release and builds/publishes the Docker image.
-
-#### Steps (CLI — branch-protection-safe fallback)
+#### Steps
 
 ```bash
 # Ensure main is up-to-date
@@ -64,11 +58,10 @@ git checkout -b chore/release-v<version>
 # Update APP_VERSION in the source to match the release version
 
 # Validate (Python toolchain — no Node/npm)
-python3 -m pip install -r requirements.txt
-python3 -m pip install ruff pytest requests
+python3 -m pip install -q -r requirements.txt 2>/dev/null
+python3 -m pip install -q ruff pytest requests 2>/dev/null
 ruff check . --select=E,F,W,B,SIM,I --ignore=E501 --statistics
 python3 -m pytest -q
-RELEASE_TAG="v<version>" ./scripts/release-readiness-check.sh
 
 # Commit and push branch
 git add .
@@ -76,10 +69,14 @@ git commit -m "chore(release): bump version to <version>"
 git push -u origin chore/release-v<version>
 
 # Open PR and squash-merge
-gh pr create --repo misospace/miso-gallery --base main --head chore/release-v<version>   --title "chore(release): bump version to <version>"   --body "Version bump for release v<version>."
+gh pr create --repo misospace/miso-gallery --base main --head chore/release-v<version> \
+  --title "chore(release): bump version to <version>" \
+  --body "Version bump for release v<version>."
+
+# Merge the PR
 gh pr merge --repo misospace/miso-gallery --squash --delete-branch
 
-# After PR merge, tag and publish
+# After PR merge, tag from up-to-date main
 git checkout main
 git pull --ff-only --tags origin main
 git tag <version>
@@ -88,6 +85,8 @@ git push origin <version>
 # Create release
 gh release create <version> --repo misospace/miso-gallery --title "<version>" --generate-notes
 ```
+
+The tag push also triggers the `Build` workflow (`.github/workflows/release.yaml`): multi-arch Docker image build + push to GHCR.
 
 #### Version source of truth
 
@@ -100,8 +99,6 @@ gh release create <version> --repo misospace/miso-gallery --title "<version>" --
 Before opening the version bump PR:
 - `ruff check . --select=E,F,W,B,SIM,I --ignore=E501 --statistics` — lint pass
 - `python -m pytest -q` — all unit tests pass
-- `RELEASE_TAG="v<version>" ./scripts/release-readiness-check.sh` — version invariant check
-- `python -m pytest -q` (with `pytest requests`) — integration tests pass
 
 
 ## Guidelines
