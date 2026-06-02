@@ -42,7 +42,7 @@ For code changes, tell workers:
 
 ## Dispatch Worker Notes
 
-For Noelle/Varka style work, prefer deterministic local preflight before model
+For Normal/Escalated worker work, prefer deterministic local preflight before model
 work:
 
 ```bash

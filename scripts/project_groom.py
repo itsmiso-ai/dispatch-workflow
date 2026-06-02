@@ -25,8 +25,8 @@ from pr_fix_queue import queued_items as queued_pr_fixes
 
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 CRON_JOBS_FILE = "/home/node/.openclaw/cron/jobs.json"
-WISHLIST_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
-GPT_AUDIT_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
+NORMAL_WORKER_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
+ESCALATED_WORKER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
 NORMAL_WORKER_AGENT = os.environ.get("DISPATCH_NORMAL_AGENT", "saffron-normal")
 ESCALATED_WORKER_AGENT = os.environ.get("DISPATCH_ESCALATED_AGENT", "saffron-escalated")
@@ -929,6 +929,12 @@ def audit_already_decomposed(issue: dict[str, Any]) -> bool:
     return bool(issue.get("followUpUrls") or [])
 
 
+def is_audit_child_issue(issue: dict[str, Any]) -> bool:
+    """Check if an issue is a decomposed child from an audit umbrella."""
+    body = issue_body(issue) or ""
+    return body.strip().startswith("<!-- audit-child:v1")
+
+
 def get_merged_prs_for_repo(repo: str) -> dict[int, list[dict[str, Any]]]:
     r = gh(["pr", "list", "--repo", repo, "--state", "merged", "--json", "number,title,body,mergedAt"], timeout=60)
     if r.returncode != 0:
@@ -986,8 +992,8 @@ def set_cron_enabled(job_id: str, enabled: bool, display_name: str) -> None:
         print(f"  [!] openclaw cron edit error: {e}")
 
 
-def set_wishlist_cron(enabled: bool) -> None:
-    set_cron_enabled(WISHLIST_CRON_ID, enabled, "(Saffron): MC: Noelle")
+def set_normal_worker_cron(enabled: bool) -> None:
+    set_cron_enabled(NORMAL_WORKER_CRON_ID, enabled, "(Saffron): MC: Normal")
 
 
 def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
@@ -1115,6 +1121,8 @@ def close_resolved_issues(issues: list[dict[str, Any]], merged_prs: dict[str, di
 def classify_audit_issue(issue: dict[str, Any]) -> tuple[str, str, str]:
     if audit_already_decomposed(issue):
         return "backlog", "high", "Audit parent already decomposed; actionable work lives on follow-up issues"
+    if is_audit_child_issue(issue):
+        return "normal", "high", "Concrete audit child issue — actionable follow-up from decomposed parent"
     if has_large_audit_findings(issue):
         return "backlog", "high", "Audit umbrella — awaiting audit-decomposer workflow (do not assign to escalated worker)"
     return "backlog", "medium", "Audit placeholder has no substantive findings yet"
@@ -1129,6 +1137,10 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
         number = issue_number(issue)
         issue_id = issue.get("id")
         if repo not in TRACKED_REPOS or number is None or not issue_id:
+            continue
+
+        status = issue_status(issue)
+        if status in {"status/in-progress", "status/in-review", "status/done"}:
             continue
 
         current_lane = normalize_lane(issue.get("currentLane")) or "normal"
@@ -1156,6 +1168,8 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
         print(f"      lane: {current_lane} -> {desired_lane}; {reason}")
         if classify_dispatch_issue(issue_id, desired_lane, reason, confidence=confidence):
             changed += 1
+            if desired_lane == "normal" and is_audit_child_issue(issue):
+                set_dispatch_status(issue, "ready", f"Audit child — {reason}")
     return changed
 
 
@@ -1174,26 +1188,29 @@ def manage_crons() -> tuple[int, int]:
         print(f"  Blocked PR fixes needing human review: {len(queued_human_pr_fixes)}")
 
     if normal_queue or queued_normal_pr_fixes:
-        print("  -> Keeping normal wishlist cron enabled")
-        set_wishlist_cron(True)
+        print("  -> Keeping normal worker cron enabled")
+        set_normal_worker_cron(True)
     else:
-        print("  -> No normal Dispatch work — disabling normal wishlist cron")
-        set_wishlist_cron(False)
+        print("  -> No normal Dispatch work — disabling normal worker cron")
+        set_normal_worker_cron(False)
 
     escalated_ready = [i for i in escalated_queue if i.get("status") == "status/ready"]
-    varka_paused = Path("/home/node/.openclaw/workspace-saffron/.state/varka_paused").exists()
-    if varka_paused:
-        print("  -> Varka manually paused (flag file present) — keeping disabled")
-        set_cron_enabled(GPT_AUDIT_CRON_ID, False, "(Saffron): MC: Varka")
+    escalated_paused = (
+        Path("/home/node/.openclaw/workspace-saffron/.state/escalated_paused").exists()
+        or Path("/home/node/.openclaw/workspace-saffron/.state/varka_paused").exists()
+    )
+    if escalated_paused:
+        print("  -> Escalated worker manually paused (flag file present) — keeping disabled")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
     elif escalated_ready or queued_escalated_pr_fixes:
         print("  Escalated queue items:")
         for item in escalated_ready[:10]:
             print(f"      {item.get('repoFullName', '?')} #{item.get('number', '?')}: {str(item.get('title') or '')[:70]}")
-        print("  -> Keeping Varka escalated cron enabled")
-        set_cron_enabled(GPT_AUDIT_CRON_ID, True, "(Saffron): MC: Varka")
+        print("  -> Keeping escalated worker cron enabled")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, True, "(Saffron): MC: Escalated")
     else:
-        print("  -> No escalated Dispatch work — disabling Varka escalated cron")
-        set_cron_enabled(GPT_AUDIT_CRON_ID, False, "(Saffron): MC: Varka")
+        print("  -> No escalated Dispatch work — disabling escalated worker cron")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
 
     return len(normal_queue), len(escalated_queue)
 

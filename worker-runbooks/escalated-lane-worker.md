@@ -39,8 +39,8 @@ Preflight actions:
 
 **Do not decompose audit or umbrella issues.** Audit/umbrella decomposition
 is handled by the weekly audit sub-agent + audit-decomposer workflow in the
-mission-control-workflow repo. Varka focuses on implementation and design
-work only.
+mission-control-workflow repo. The escalated worker focuses on implementation
+and design work only.
 
 Skip any issue labeled `audit` or `needs-gpt` that is an umbrella/parent with
 multiple findings.

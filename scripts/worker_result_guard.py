@@ -47,7 +47,7 @@ def validate(text: str) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate Noelle/Varka terminal output")
+    parser = argparse.ArgumentParser(description="Validate Normal/Escalated worker terminal output")
     parser.add_argument("text", nargs="*", help="Result text. Reads stdin when omitted.")
     args = parser.parse_args()
 
