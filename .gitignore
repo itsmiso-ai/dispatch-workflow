@@ -17,6 +17,16 @@ worker-runbooks/*
 !worker-runbooks/normal-lane-worker.md
 !worker-runbooks/escalated-lane-worker.md
 
+# Allow sanitized cron prompt templates.
+!cron-prompts/
+cron-prompts/*
+!cron-prompts/README.md
+!cron-prompts/normal-worker.md
+!cron-prompts/escalated-worker.md
+!cron-prompts/nightly-audit-decomposer.md
+!cron-prompts/weekly-audit.md
+!cron-prompts/daily-pr-review.md
+
 # Allow selected scripts directory entries.
 !scripts/
 scripts/*
