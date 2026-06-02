@@ -560,8 +560,14 @@ def claim_issue(item: dict[str, Any], agent_name: str) -> dict[str, Any]:
         "issueNumber": int(number),
         "agentName": agent_name,
     }
-    result = dispatch_request("/api/issues/claim", method="POST", payload=payload, timeout=30)
-    return result if isinstance(result, dict) else {"result": result}
+    try:
+        result = dispatch_request("/api/issues/claim", method="POST", payload=payload, timeout=30)
+        return result if isinstance(result, dict) else {"result": result}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        if e.code == 409 and agent_name in body:
+            return {"alreadyClaimed": True, "agent": agent_name, "issueId": issue_id, "item": item}
+        raise
 
 
 def build_packet(lane: str, agent_name: str, *, claim: bool) -> dict[str, Any]:
