@@ -24,6 +24,7 @@ from typing import Any
 from pr_fix_queue import queued_items as queued_pr_fixes
 
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
+ROOT = Path(__file__).resolve().parents[1]
 CRON_JOBS_FILE = "/home/node/.openclaw/cron/jobs.json"
 NORMAL_WORKER_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
 ESCALATED_WORKER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
@@ -48,12 +49,11 @@ GPT_AUDIT_TITLE_PREFIXES = ("weekly tech debt audit:", "tech debt audit:")
 LANE_ALIASES = {"gpt": "escalated"}
 VALID_LANES = {"normal", "escalated", "backlog"}
 
-STATE_DIR = Path(os.environ.get("SAFFRON_STATE_DIR", Path.home() / ".openclaw" / "workspace-saffron" / ".state"))
+STATE_DIR = Path(os.environ.get("SAFFRON_STATE_DIR", ROOT / ".state"))
 BACKLOG_GROOMING_STATE = STATE_DIR / "backlog_grooming.json"
 BACKLOG_GROOMING_REPORTS = STATE_DIR / "backlog_grooming_reports"
+BACKLOG_GROOMING_REQUESTS = STATE_DIR / "backlog_grooming_requests"
 BACKLOG_GROOMING_MARKER = "<!-- saffron-backlog-grooming -->"
-BACKLOG_GROOMING_MODEL = os.environ.get("BACKLOG_GROOMING_MODEL", "litellm/self-hosted")
-BACKLOG_GROOMING_COMMAND = os.environ.get("BACKLOG_GROOMING_COMMAND", "")
 
 BACKLOG_RECOMMENDATIONS = {
     "ready",
@@ -66,7 +66,6 @@ BACKLOG_RECOMMENDATIONS = {
 HUMAN_ATTENTION_RECOMMENDATIONS = {"needs-human", "needs-info"}
 
 RENOVATE_TITLE_RE = re.compile(r"(?:dependency dashboard|^update (?:dependency|image|deps?)|renovate)", re.I)
-GPT_MODEL_RE = re.compile(r"(?:^|/)(?:gpt|chatgpt)[-/]", re.I)
 
 
 def normalize_lane(lane: str | None) -> str | None:
@@ -494,63 +493,17 @@ Recent comments:
 """
 
 
-def _run_llm(prompt: str, model: str | None, command: str | None, timeout: int) -> str:
-    """Single LLM attempt; returns stdout or raises RuntimeError."""
-    if command:
-        if GPT_MODEL_RE.search(command):
-            raise RuntimeError("Refusing to use a GPT command for backlog grooming.")
-        proc = subprocess.run(
-            command, input=prompt, capture_output=True, text=True, shell=True, timeout=timeout,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "LLM command failed").strip()[:1000])
-        return proc.stdout.strip()
-    else:
-        if GPT_MODEL_RE.search(model or ""):
-            raise RuntimeError("Refusing to use a GPT model for backlog grooming.")
-        # Call litellm proxy directly via HTTP instead of openclaw capability model run
-        import requests as _http_lib
-        litellm_url = os.environ.get("LITELLM_PROXY_URL", "http://litellm.llm:4000/v1/chat/completions")
-        litellm_key = os.environ.get("LITELLM_API_KEY", "")
-        # Translate litellm/ prefix for proxy
-        # Translate model name for litellm proxy
-        litellm_model = (model or "self-hosted").replace("litellm/", "")
-        try:
-            resp = _http_lib.post(
-                litellm_url,
-                headers={"Authorization": f"Bearer {litellm_key}", "Content-Type": "application/json"},
-                json={"model": litellm_model, "messages": [{"role": "user", "content": prompt}]},
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            msg = result["choices"][0]["message"]
-            text = msg.get("content") or msg.get("reasoning_content") or ""
-            return text.strip()
-        except _http_lib.exceptions.Timeout:
-            raise RuntimeError(f"LLM request timed out after {timeout}s")
-        except _http_lib.exceptions.HTTPError as e:
-            body = e.response.text[:500] if e.response is not None else str(e)
-            raise RuntimeError(f"LLM HTTP {e.response.status_code}: {body}")
-        except Exception as e:
-            raise RuntimeError(f"LLM HTTP failed: {e}")
+def run_backlog_grooming_llm(_prompt: str, timeout: int = 900) -> str:
+    """Disabled compatibility shim.
 
-
-def run_backlog_grooming_llm(prompt: str, timeout: int = 900) -> str:
-    primary_model = BACKLOG_GROOMING_MODEL
-    fallback_model = "litellm/self-hosted"
-    try:
-        return _run_llm(prompt, primary_model, BACKLOG_GROOMING_COMMAND or None, timeout)
-    except RuntimeError as e:
-        err_text = str(e).lower()
-        is_network = any(k in err_text for k in ("network", "connection", "timeout", "failover", "gatewayclientrequesterror"))
-        if not is_network:
-            raise
-        print(f"      [!] primary LLM failed ({e}); trying fallback ({fallback_model})")
-        try:
-            return _run_llm(prompt, fallback_model, None, timeout)
-        except RuntimeError as e2:
-            raise RuntimeError(f"Primary ({primary_model}) failed: {e}; Fallback ({fallback_model}) failed: {e2}") from e2
+    Backlog grooming is an agent intelligence workflow. Scripts may collect
+    candidates and apply Saffron-authored results, but they must not call a
+    model directly.
+    """
+    raise RuntimeError(
+        "script-owned model grooming is disabled; collect candidates and have "
+        "Saffron or a Saffron sub-agent apply results through Dispatch"
+    )
 
 
 def parse_backlog_grooming_result(raw: str) -> dict[str, Any]:
@@ -656,6 +609,110 @@ def backlog_grooming_candidates(issues: list[dict[str, Any]], *, include_no_stat
     return sorted(candidates, key=sort_key)
 
 
+def backlog_candidate_fingerprint(issue: dict[str, Any]) -> str:
+    return (
+        f"{issue_updated_at(issue)}|"
+        f"{issue_status(issue) or 'no-status'}|"
+        f"{normalize_lane(issue.get('currentLane')) or 'normal'}"
+    )
+
+
+def backlog_candidate_record(issue: dict[str, Any], *, include_comments: bool = True) -> dict[str, Any] | None:
+    repo = repo_full_name(issue)
+    number = issue_number(issue)
+    if not repo or number is None:
+        return None
+
+    snapshot = github_issue_snapshot(repo, number)
+    if snapshot is None:
+        return None
+    if str(snapshot.get("state") or "").upper() != "OPEN":
+        return None
+
+    live_status = live_issue_status(snapshot)
+    if live_status in {"status/in-progress", "status/in-review", "status/done", "status/ready"}:
+        return None
+
+    live_issue = issue_with_live_github_state(issue, snapshot)
+    comments = github_issue_comments(repo, number) if include_comments else []
+    labels = sorted(issue_labels(live_issue))
+    return {
+        "issueId": live_issue.get("id"),
+        "repo": repo,
+        "number": number,
+        "title": issue_title(live_issue),
+        "url": issue_url(live_issue),
+        "state": live_issue.get("state"),
+        "labels": labels,
+        "status": issue_status(live_issue) or "no-status",
+        "currentLane": normalize_lane(live_issue.get("currentLane")) or "normal",
+        "updatedAt": issue_updated_at(live_issue),
+        "fingerprint": backlog_candidate_fingerprint(live_issue),
+        "body": issue_body(live_issue),
+        "recentComments": comments,
+        "agentBrief": build_backlog_grooming_prompt(live_issue, comments),
+    }
+
+
+def write_backlog_candidate_request(records: list[dict[str, Any]], report_path: str | None = None) -> Path:
+    BACKLOG_GROOMING_REQUESTS.mkdir(parents=True, exist_ok=True)
+    if report_path:
+        path = Path(report_path)
+    else:
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = BACKLOG_GROOMING_REQUESTS / f"backlog-candidates-{stamp}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "candidateCount": len(records),
+        "candidates": records,
+        "instructions": {
+            "owner": "Saffron agent or Saffron sub-agent",
+            "applyEndpoint": "POST /api/issues/groom",
+            "allowedActions": [
+                "promote_to_ready",
+                "escalate",
+                "mark_not_ready",
+                "mark_needs_info",
+                "mark_blocked",
+            ],
+            "notes": [
+                "Scripts only collect candidates and apply explicit agent-authored results.",
+                "Do not call models from this script path.",
+                "Labels are source of truth: status/backlog is not worker-ready.",
+            ],
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def collect_backlog_grooming_candidates(
+    issues: list[dict[str, Any]],
+    *,
+    max_items: int,
+    include_no_status: bool,
+    report_path: str | None,
+) -> tuple[int, Path | None]:
+    candidates = backlog_grooming_candidates(issues, include_no_status=include_no_status)
+    print(f"  Backlog grooming candidates: {len(candidates)}")
+
+    records: list[dict[str, Any]] = []
+    for issue in candidates:
+        if max_items >= 0 and len(records) >= max_items:
+            break
+        record = backlog_candidate_record(issue)
+        if record is None:
+            continue
+        records.append(record)
+        print(f"  [{record['repo']}#{record['number']}] candidate: {record['title'][:80]}")
+
+    report = write_backlog_candidate_request(records, report_path) if records or report_path else None
+    if report:
+        print(f"  Backlog candidate request: {report}")
+    return len(records), report
+
+
 def apply_backlog_grooming(issue: dict[str, Any], result: dict[str, Any], *, comment: bool) -> bool:
     repo = repo_full_name(issue)
     number = issue_number(issue)
@@ -687,7 +744,7 @@ def apply_backlog_grooming(issue: dict[str, Any], result: dict[str, Any], *, com
         ) and ok
 
     if result["recommendation"] in {"ready", "escalated"}:
-        ok = set_dispatch_status(issue, "ready", "LLM-assisted backlog grooming marked issue claimable") and ok
+        ok = set_dispatch_status(issue, "ready", "Saffron backlog grooming marked issue claimable") and ok
 
     if comment:
         live_issue = issue_with_live_github_state(issue, snapshot)
@@ -1219,22 +1276,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Dispatch-first grooming for Saffron queues")
     parser.add_argument("--no-sync", action="store_true", help="Skip Dispatch issue sync before grooming")
     parser.add_argument("--list-tracked-repos", action="store_true", help="Print enabled tracked repos from Dispatch and exit")
-    parser.add_argument("--groom-backlog", action="store_true", help="Run LLM-assisted backlog investigation/enrichment pass")
-    parser.add_argument("--groom-backlog-use-llm", action="store_true", help="Explicitly allow the LLM-backed backlog grooming path")
-    parser.add_argument("--groom-backlog-only", action="store_true", help="Only run backlog grooming; skip normal closure/lane/cron mutations")
-    parser.add_argument("--groom-backlog-apply", action="store_true", help="Apply backlog grooming recommendations through Dispatch/GitHub")
-    parser.add_argument("--groom-backlog-max", type=int, default=5, help="Maximum backlog items to investigate (-1 for all)")
-    parser.add_argument("--groom-backlog-force", action="store_true", help="Re-groom issues even if unchanged since last pass")
+    parser.add_argument("--groom-backlog", action="store_true", help="Collect backlog candidates for Saffron-owned grooming")
+    parser.add_argument("--groom-backlog-use-llm", action="store_true", help="Removed; scripts must not call models for grooming")
+    parser.add_argument("--groom-backlog-only", action="store_true", help="Only collect backlog candidates; skip normal closure/lane/cron mutations")
+    parser.add_argument("--groom-backlog-apply", action="store_true", help="Removed; Saffron applies authored grooming results through Dispatch")
+    parser.add_argument("--groom-backlog-max", type=int, default=5, help="Maximum backlog candidates to collect (-1 for all)")
+    parser.add_argument("--groom-backlog-force", action="store_true", help="Compatibility flag; candidate collection does not suppress unchanged issues")
     parser.add_argument("--groom-backlog-include-no-status", action="store_true", help="Also investigate no-status non-Renovate issues")
-    parser.add_argument("--groom-backlog-no-comment", action="store_true", help="Do not add GitHub enrichment comments when applying")
-    parser.add_argument("--groom-backlog-report", help="Write backlog grooming JSONL report to this path")
+    parser.add_argument("--groom-backlog-no-comment", action="store_true", help="Compatibility flag; scripts no longer add grooming comments")
+    parser.add_argument("--groom-backlog-report", help="Write backlog candidate JSON request to this path")
     args = parser.parse_args()
 
-    if args.groom_backlog and not args.groom_backlog_use_llm:
-        print(
-            "  [!] --groom-backlog is an intelligence workflow. "
-            "Pass --groom-backlog-use-llm explicitly to run it."
-        )
+    if args.groom_backlog_use_llm:
+        print("  [!] --groom-backlog-use-llm has been removed; scripts must not call models for grooming.")
+        return 2
+    if args.groom_backlog_apply:
+        print("  [!] --groom-backlog-apply has been removed; Saffron applies grooming results through /api/issues/groom.")
         return 2
 
     global TRACKED_REPOS
@@ -1268,22 +1325,17 @@ def main() -> int:
         if not args.groom_backlog:
             print("  [!] --groom-backlog-only requires --groom-backlog")
             return 2
-        print("\n[*] LLM-assisted backlog grooming only...")
-        print("  Mode: APPLY (Dispatch/GitHub mutations enabled)" if args.groom_backlog_apply else "  Mode: DRY-RUN (no Dispatch/GitHub mutations)")
-        backlog_groomed, backlog_promoted, backlog_surfaced, _report = groom_backlog_issues(
+        print("\n[*] Backlog candidate collection only...")
+        backlog_candidates, _report = collect_backlog_grooming_candidates(
             issues,
-            apply=args.groom_backlog_apply,
             max_items=args.groom_backlog_max,
-            force=args.groom_backlog_force,
             include_no_status=args.groom_backlog_include_no_status,
-            comment=not args.groom_backlog_no_comment,
             report_path=args.groom_backlog_report,
         )
         print("\nSummary:")
         print(
-            f"  dispatch:{len(issues)} cached,{open_count} open,{backlog_groomed} "
-            f"backlog_investigated,{backlog_promoted} backlog_applied,{backlog_surfaced} "
-            "backlog_surfaced_not_ready"
+            f"  dispatch:{len(issues)} cached,{open_count} open,{backlog_candidates} "
+            f"backlog_candidates_for_agent"
         )
         return 0
 
@@ -1315,27 +1367,17 @@ def main() -> int:
     changed_lanes = reconcile_lanes(issues)
     print(f"  Lane updates: {changed_lanes}")
 
-    backlog_groomed = 0
-    backlog_promoted = 0
-    backlog_surfaced = 0
+    backlog_candidates = 0
     if args.groom_backlog:
-        print("\n[*] LLM-assisted backlog grooming...")
-        if args.groom_backlog_apply:
-            print("  Mode: APPLY (Dispatch/GitHub mutations enabled)")
-        else:
-            print("  Mode: DRY-RUN (no Dispatch/GitHub mutations)")
-        backlog_groomed, backlog_promoted, backlog_surfaced, _report = groom_backlog_issues(
+        print("\n[*] Collecting backlog candidates for Saffron-owned grooming...")
+        backlog_candidates, _report = collect_backlog_grooming_candidates(
             issues,
-            apply=args.groom_backlog_apply,
             max_items=args.groom_backlog_max,
-            force=args.groom_backlog_force,
             include_no_status=args.groom_backlog_include_no_status,
-            comment=not args.groom_backlog_no_comment,
             report_path=args.groom_backlog_report,
         )
         print(
-            f"  Backlog grooming: investigated={backlog_groomed} "
-            f"applied={backlog_promoted} surfaced_not_ready={backlog_surfaced}"
+            f"  Backlog candidates for agent grooming: {backlog_candidates}"
         )
 
     print("\n[*] Managing crons from Dispatch queues...")
@@ -1345,9 +1387,8 @@ def main() -> int:
     print(
         f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,"
         f"{escalated_count} escalated_queue,{closed} closed,"
-        f"{labels_changed} labels_changed,{changed_lanes} lane_updates,{backlog_groomed} "
-        f"backlog_investigated,{backlog_promoted} backlog_applied,{backlog_surfaced} "
-        "backlog_surfaced_not_ready"
+        f"{labels_changed} labels_changed,{changed_lanes} lane_updates,{backlog_candidates} "
+        "backlog_candidates_for_agent"
     )
     return 0
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run Saffron heartbeat plumbing and report the result to Dispatch.
+"""Run deterministic Saffron heartbeat plumbing and report the result to Dispatch.
 
-HEARTBEAT.md intentionally stays short; this script owns the command sequence.
+HEARTBEAT.md owns the agent-intelligence work after this script returns.
 """
 
 from __future__ import annotations
@@ -21,9 +21,19 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def run_step(label: str, args: list[str]) -> tuple[int, str]:
+def run_step(label: str, args: list[str], timeout: int) -> tuple[int, str]:
     print(f"[*] {label}", file=sys.stderr)
-    proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "") + (exc.stderr or "")
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        print(f"[!] {label} timed out after {timeout}s", file=sys.stderr)
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        return 124, output
+
     output = (proc.stdout or "") + (proc.stderr or "")
     if output:
         print(output, end="" if output.endswith("\n") else "\n")
@@ -39,12 +49,10 @@ def touched_urls(text: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Saffron heartbeat")
-    parser.add_argument("--skip-llm-grooming", action="store_true", help="Skip bounded LLM backlog enrichment")
     args = parser.parse_args()
 
     started_at = utc_now()
     status = "ok"
-    warnings = 0
     combined_output: list[str] = []
 
     steps = [
@@ -52,44 +60,36 @@ def main() -> int:
             "GitHub follow-up watcher",
             ["python3", str(ROOT / "scripts/github_followup_watcher.py")],
             True,
+            180,
         ),
         (
             "Dispatch sync",
             ["python3", str(ROOT / "scripts/project_backlog_sync.py")],
             False,
+            120,
         ),
         (
             "Deterministic Dispatch grooming",
             ["python3", str(ROOT / "scripts/project_groom.py"), "--no-sync"],
             True,
+            240,
         ),
     ]
-    if not args.skip_llm_grooming:
-        steps.append(
-            (
-                "Bounded self-hosted backlog grooming",
-                ["python3", str(ROOT / "scripts/backlog_groomer.py"), "--max", "3"],
-                False,
-            )
-        )
 
-    for label, command, fatal in steps:
-        code, output = run_step(label, command)
+    for label, command, fatal, timeout in steps:
+        code, output = run_step(label, command, timeout)
         combined_output.append(output)
         if code != 0:
             if fatal:
                 status = "error"
             else:
-                warnings += 1
                 if status == "ok":
                     status = "warning"
 
     finished_at = utc_now()
-    summary = "Heartbeat ran follow-up watcher, sync, deterministic grooming, and bounded self-hosted backlog grooming."
-    if args.skip_llm_grooming:
-        summary = "Heartbeat ran follow-up watcher, sync, and deterministic grooming."
-    if warnings:
-        summary = f"{summary} Non-fatal warning steps: {warnings}."
+    summary = "Heartbeat ran follow-up watcher, sync, and deterministic Dispatch grooming."
+    if status == "warning":
+        summary = f"{summary} One or more non-fatal deterministic steps warned."
 
     report_cmd = [
         "python3",
