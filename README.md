@@ -25,7 +25,6 @@ The following are intentionally excluded and must never be committed:
 - **cron/jobs.json** — Runtime state, managed by `openclaw cron`
 - **.state/*** — Runtime queue state and watch lists
 - **pr_fix_queue.json** — Legacy local queue state; active PR-fix state lives in Dispatch
-- **github_followup_watcher.json** — Runtime watch state
 - Any file containing tokens, secrets, or credentials
 - Any OpenClaw agent config, session, or memory files
 - home-ops or dispatch app code
@@ -43,12 +42,11 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 
 | Script | Purpose |
 |--------|---------|
-| `github_followup_watcher.py` | Watch for PR/issue activity by itsmiso-ai |
 | `issue_lane_judge.py` | Classify issues into `normal`/`escalated`/`backlog` lanes |
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
 | `dispatch_worker_preflight.py` | Deterministic Normal/Escalated worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
 | `worker_result_guard.py` | Validate Normal/Escalated worker final text against the terminal worker contract |
-| `heartbeat.py` | Run deterministic heartbeat plumbing: watcher, sync, Dispatch reconciliation, cron management, and Dispatch run reporting |
+| `heartbeat.py` | Run deterministic heartbeat plumbing: Dispatch PR follow-up sync, scheduled sync, reconciliation, cron management, and Dispatch run reporting |
 | `backlog_groomer.py` | Deterministic backlog candidate collector for Saffron-owned agent grooming |
 | `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
 | `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
