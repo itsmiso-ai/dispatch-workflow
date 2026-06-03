@@ -48,8 +48,8 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
 | `dispatch_worker_preflight.py` | Deterministic Normal/Escalated worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
 | `worker_result_guard.py` | Validate Normal/Escalated worker final text against the terminal worker contract |
-| `heartbeat.py` | Run the compact heartbeat contract: watcher, sync, grooming, bounded enrichment, and Dispatch run reporting |
-| `backlog_groomer.py` | Bounded self-hosted backlog grooming wrapper used by heartbeat |
+| `heartbeat.py` | Run deterministic heartbeat plumbing: watcher, sync, Dispatch reconciliation, cron management, and Dispatch run reporting |
+| `backlog_groomer.py` | Deterministic backlog candidate collector for Saffron-owned agent grooming |
 | `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
 | `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
@@ -115,31 +115,45 @@ Work selection:
 - Renovate issues are excluded from agent queues unless explicitly requested.
 - If Dispatch returns active work, a checkpoint, or `nextAction`, workers obey that next action exactly, perform one bounded step, update Dispatch with the result/checkpoint, and stop.
 
-## Bounded LLM-assisted backlog grooming
+## Agent-Owned Backlog Grooming
 
-`project_groom.py` has an explicit backlog investigation mode for open issues that are stuck in `status/backlog`. Heartbeat runs deterministic sync/grooming first, then uses this bounded intelligence step to enrich up to 3 previously ungroomed backlog issues per run.
+Backlog grooming is an agent intelligence workflow. Scripts may collect
+candidate data and apply explicit Saffron-authored decisions through Dispatch,
+but scripts must not call models directly.
 
-Dry-run investigation, no mutations:
-
-```bash
-python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-use-llm --groom-backlog-only --groom-backlog-max 5
-```
-
-Apply recommendations after reviewing the report:
+Collect backlog candidates for the Saffron heartbeat/sub-agent handoff:
 
 ```bash
-python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-use-llm --groom-backlog-only --groom-backlog-apply --groom-backlog-max 5
+python3 scripts/backlog_groomer.py --max 10
 ```
 
-The grooming pass requires the explicit `--groom-backlog-use-llm` flag before it will call a model. It uses `BACKLOG_GROOMING_MODEL` (default `litellm/self-hosted`) to read issue metadata and recent comments, then records a JSONL report under `.state/backlog_grooming_reports/`. The script refuses GPT models for backlog grooming; use MiniMax/self-hosted here, and reserve GPT for the weekly audit and escalated-lane cron only.
+Or call the lower-level collector directly:
 
-Recommendations are one of:
-- `ready` — promote to `status/ready` and keep/use the recommended lane.
-- `escalated` — promote to `status/ready` on the escalated lane.
-- `needs-info` or `needs-human` — keep out of Ready and surface as a human-attention escalation.
-- `decompose` or `keep-backlog` — keep out of Ready and record the reason/next action in the report without surfacing as an escalation.
+```bash
+python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-max 10
+```
 
-With `--groom-backlog-apply`, the script uses Dispatch APIs for status/lane updates and may post a guarded GitHub enrichment comment unless `--groom-backlog-no-comment` is set. Comments are only posted when they add missing detail or surface a non-ready reason; fully specified ready issues are promoted without a redundant grooming note. The groomer also re-checks live GitHub state before investigation and apply, so closed or already-ready issues are skipped even if Dispatch cache is stale.
+The collector writes a JSON request under
+`.state/backlog_grooming_requests/`. Each candidate includes GitHub issue
+metadata, labels, body, recent comments, and an `agentBrief` that a Saffron
+heartbeat turn or Saffron sub-agent can use for the judgment step.
+
+Saffron/sub-agent recommendations should be translated into Dispatch grooming
+actions:
+
+- `ready` -> `POST /api/issues/groom` with `action: "promote_to_ready"`.
+- `escalated` -> `POST /api/issues/groom` with `action: "escalate"` and then ensure the issue is ready/claimable when appropriate.
+- `needs-info` -> `POST /api/issues/groom` with `action: "mark_needs_info"`.
+- `needs-human` / policy ambiguity -> `POST /api/issues/groom` with `action: "mark_not_ready"` and a clear reason.
+- blocked dependencies -> `POST /api/issues/groom` with `action: "mark_blocked"`.
+
+Labels remain the source of truth: `status/backlog` is not worker-ready.
+Promoting an issue to worker queues requires changing the GitHub/Dispatch
+status label to `status/ready`.
+
+The removed flags `--groom-backlog-use-llm` and `--groom-backlog-apply` now
+fail intentionally. If a workflow needs judgment, spawn or run Saffron agent
+work; do not reintroduce direct model calls into scripts.
 
 Affected cron jobs:
 - `(Saffron): MC: Normal` — normal lane, uses Dispatch normal queue
