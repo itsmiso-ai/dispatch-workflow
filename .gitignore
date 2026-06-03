@@ -8,6 +8,7 @@
 # Allow selected docs directory entries.
 !docs/
 docs/*
+!docs/heartbeat.md
 !docs/subagent-patterns.md
 
 # Allow worker runbooks.
