@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,6 +50,53 @@ def touched_urls(text: str) -> list[str]:
     return sorted(dict.fromkeys(urls))
 
 
+def dispatch_base_url() -> str:
+    return os.environ.get("DISPATCH_URL", "http://dispatch.llm:3000").rstrip("/")
+
+
+def dispatch_token() -> str:
+    return os.environ.get("DISPATCH_AGENT_TOKEN", "")
+
+
+def dispatch_request(path: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 120) -> Any:
+    token = dispatch_token()
+    data = None
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(
+        f"{dispatch_base_url()}{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else None
+
+
+def run_dispatch_pr_followup_sync() -> tuple[int, str]:
+    print("[*] Dispatch PR follow-up sync", file=sys.stderr)
+    try:
+        result = dispatch_request("/api/pr-followup/sync", method="POST", payload={}, timeout=120)
+    except Exception as exc:
+        output = f"Dispatch PR follow-up sync failed: {exc}\n"
+        print(output, end="")
+        return 1, output
+
+    output = (
+        "Dispatch PR follow-up sync: "
+        f"repos={result.get('reposScanned', 0)} "
+        f"prs={result.get('prsScanned', 0)} "
+        f"enqueued={result.get('enqueued', 0)} "
+        f"skipped={result.get('skipped', 0)}\n"
+    )
+    print(output, end="")
+    return 0, output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Saffron heartbeat")
     args = parser.parse_args()
@@ -55,13 +105,12 @@ def main() -> int:
     status = "ok"
     combined_output: list[str] = []
 
+    code, output = run_dispatch_pr_followup_sync()
+    combined_output.append(output)
+    if code != 0:
+        status = "error"
+
     steps = [
-        (
-            "GitHub follow-up watcher",
-            ["python3", str(ROOT / "scripts/github_followup_watcher.py")],
-            True,
-            180,
-        ),
         (
             "Dispatch sync",
             ["python3", str(ROOT / "scripts/project_backlog_sync.py")],
@@ -87,7 +136,7 @@ def main() -> int:
                     status = "warning"
 
     finished_at = utc_now()
-    summary = "Heartbeat ran follow-up watcher, sync, and deterministic Dispatch grooming."
+    summary = "Heartbeat ran Dispatch PR follow-up sync, scheduled sync, and deterministic Dispatch grooming."
     if status == "warning":
         summary = f"{summary} One or more non-fatal deterministic steps warned."
 
