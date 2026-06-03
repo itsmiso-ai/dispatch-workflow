@@ -17,11 +17,13 @@ This repo tracks Dispatch workflow files from the Saffron agent workspace:
 - Bash/shell utility scripts
 - Workflow documentation and runbooks
 - Sanitized cron prompt templates for Dispatch-owned automation
+- Public-safe heartbeat contract reference at `docs/heartbeat.md`
 
 ## Excluded
 
 The following are intentionally excluded and must never be committed:
-- **HEARTBEAT.md** — PVC-backed, not versioned
+- **HEARTBEAT.md** — PVC-backed runtime copy; version the public-safe reference
+  copy at `docs/heartbeat.md` instead
 - **cron/jobs.json** — Runtime state, managed by `openclaw cron`
 - **.state/*** — Runtime queue state and watch lists
 - **pr_fix_queue.json** — Legacy local queue state; active PR-fix state lives in Dispatch
