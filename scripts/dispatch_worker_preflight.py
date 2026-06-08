@@ -565,8 +565,13 @@ def claim_issue(item: dict[str, Any], agent_name: str) -> dict[str, Any]:
         return result if isinstance(result, dict) else {"result": result}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        if e.code == 409 and agent_name in body:
-            return {"alreadyClaimed": True, "agent": agent_name, "issueId": issue_id, "item": item}
+        if e.code == 409:
+            return {
+                "alreadyClaimed": True,
+                "conflictBody": body,
+                "issueId": issue_id,
+                "agentName": agent_name,
+            }
         raise
 
 
@@ -635,7 +640,18 @@ def build_packet(lane: str, agent_name: str, *, claim: bool) -> dict[str, Any]:
         "issueKey": issue_key(str(selected.get("repoFullName")), selected.get("number") or selected.get("issueNumber")),
     }
     if claim:
-        packet["claim"] = claim_issue(selected, agent_name)
+        claim_result = claim_issue(selected, agent_name)
+        packet["claim"] = claim_result
+        # If 409 conflict, surface the reason instead of silently attaching it
+        if claim_result.get("alreadyClaimed"):
+            conflict_body = claim_result.get("conflictBody", "(no body)")
+            packet["action"] = "claim-conflict"
+            packet["terminal"] = (
+                f"Claim conflict on #{selected.get('number')}: "
+                f"issue is actively leased. Response: {conflict_body}"
+            )
+            packet["reason"] = "claim-409-conflict"
+            return packet
     return packet
 
 
