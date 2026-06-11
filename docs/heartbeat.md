@@ -1,6 +1,6 @@
 # HEARTBEAT.md
 
-Run every hour.
+Run every hour. GROOM SOME FUCKING ISSUES GODDAMNIT.
 
 ## Contract
 
@@ -14,12 +14,15 @@ First run deterministic plumbing:
 python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/heartbeat.py
 ```
 
-If the runner exits non-zero, surface the error output and stop.
+If the runner exits non-zero, surface the failure to Discord **using the message
+tool** to channel `channel:1488593762644131940` (the Saffron automation board
+channel), then reply `HEARTBEAT_FAILED` with the error output. Do not silently
+fail — the message tool is the fallback for cron delivery problems.
 
 Then collect backlog candidates:
 
 ```bash
-python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/backlog_groomer.py --max 10
+python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/backlog_groomer.py --max 10 --include-no-status
 ```
 
 If there are no candidates and no user-relevant deterministic results, reply
@@ -39,7 +42,7 @@ deterministic Dispatch reconciliation/lane cleanup, cron enablement, and
 best-effort Dispatch run reporting.
 
 `dispatch-workflow/scripts/backlog_groomer.py` is deterministic only. It
-collects open `status/backlog` candidates and writes a JSON request under
+collects open `status/backlog` candidates plus unlabeled/no-status issues and writes a JSON request under
 `dispatch-workflow/.state/backlog_grooming_requests/`. It does not perform
 judgment and must not call a model.
 
@@ -70,6 +73,21 @@ Only send a user-visible heartbeat reply for:
 
 Do not surface routine `ready`, `escalated`, `decompose`, or `keep-backlog`
 grooming outcomes unless there is an error.
+
+## Failure Reporting
+
+If `dispatch-workflow/scripts/heartbeat.py` exits non-zero or the backlog
+groomer fails critically, the heartbeat **must** surface the failure to Discord
+via the message tool:
+
+```
+message(action="send", channel="discord", target="channel:1488593762644131940", message="<failure summary>")
+```
+
+The message tool is the authoritative failure path because cron `failureAlert`
+is configured silently and may not reach LilDrunkenSmurf directly. Surface every
+heartbeat failure to the Saffron automation board channel so it's visible even
+when DM delivery is suppressed.
 
 ## Rules
 
