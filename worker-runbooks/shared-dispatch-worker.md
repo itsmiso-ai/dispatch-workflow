@@ -67,6 +67,27 @@ If lane is missing or mismatched, end:
 
 ## Implementation Gate
 
+## Direct Push Rule (Misospace Only)
+
+All saffron/* and worker-created branches must be pushed **directly** to the
+`misospace/*` origin remote. No forks exist for `misospace/*` repos.
+
+- Use the local `/data/git/{repo}` repo. Do not clone fresh.
+- `git push origin <branch>` — never via a fork.
+- `gh pr create` must always result in a same-org PR. After creating, verify:
+  `gh pr view --json isCrossRepository` returns `false`.
+- Cross-repo/fork PRs **break the AI PR review CI** because GitHub does not
+  forward secrets (e.g. `ACTIONS_APP_ID`, `ACTIONS_APP_PRIVATE_KEY`) to fork
+  PR runs. The review job will fail with:
+  `Error: The 'client-id' (or deprecated 'app-id') input must be set to a
+  non-empty string.`
+
+If `isCrossRepository` is true, the push is wrong. Fix it before reporting
+`Done`. Do not just close and recreate the PR — re-push to the right remote
+and re-open.
+
+## Implementation Gate
+
 After code changes:
 
 1. validate locally as far as practical
