@@ -49,6 +49,11 @@ scripts/*
 !scripts/sync_summary.py
 !scripts/worker_result_guard.py
 
+# Allow focused unit tests for the dispatch workflow scripts.
+!tests/
+tests/*
+!tests/test_reconcile_lanes_grooming.py
+
 # Explicit never-track rules.
 HEARTBEAT.md
 cron/

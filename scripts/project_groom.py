@@ -1221,6 +1221,14 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
         if desired_lane == current_lane:
             continue
 
+        # If the issue was explicitly groomed (has a groomedAt timestamp from
+        # /api/issues/groom), respect that decision and skip the heuristic.
+        # This stops the heartbeat from silently reverting Saffron's
+        # promotion of audit/umbrella issues back to backlog, which was
+        # causing recurring candidates and worker churn.
+        if issue.get("groomedAt"):
+            continue
+
         print(f"  [{repo} #{number}] {issue_title(issue)[:70]}")
         print(f"      lane: {current_lane} -> {desired_lane}; {reason}")
         if classify_dispatch_issue(issue_id, desired_lane, reason, confidence=confidence):
