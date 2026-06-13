@@ -2,7 +2,8 @@
 """Dispatch-first grooming for Saffron work queues.
 
 GitHub issues/PRs are the source of truth for issue state, labels, and merged PRs.
-Dispatch owns work discovery, claims, lane assignment, and cron enablement.
+Dispatch owns work discovery, claims, and lane assignment. Cron scheduling is
+operator-owned and this script does not mutate it.
 
 This script intentionally does not read or mutate GitHub Projects.
 """
@@ -25,9 +26,6 @@ from pr_fix_queue import queued_items as queued_pr_fixes
 
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 ROOT = Path(__file__).resolve().parents[1]
-CRON_JOBS_FILE = "/home/node/.openclaw/cron/jobs.json"
-NORMAL_WORKER_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
-ESCALATED_WORKER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
 NORMAL_WORKER_AGENT = os.environ.get("DISPATCH_NORMAL_AGENT", "saffron-normal")
 ESCALATED_WORKER_AGENT = os.environ.get("DISPATCH_ESCALATED_AGENT", "saffron-escalated")
@@ -1032,27 +1030,6 @@ def judge_lane(repo: str, number: int) -> dict[str, Any] | None:
         return None
 
 
-def set_cron_enabled(job_id: str, enabled: bool, display_name: str) -> None:
-    """Set cron enabled state via openclaw CLI -- gateway does not hot-reload jobs.json."""
-    import subprocess
-    state = "ENABLED" if enabled else "DISABLED"
-    print(f"  [*] {display_name} -> {state}")
-    flag = "--enable" if enabled else "--disable"
-    try:
-        r = subprocess.run(
-            ["openclaw", "cron", "edit", job_id, flag],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            print(f"  [!] openclaw cron edit failed: {r.stderr[:200]}")
-    except Exception as e:
-        print(f"  [!] openclaw cron edit error: {e}")
-
-
-def set_normal_worker_cron(enabled: bool) -> None:
-    set_cron_enabled(NORMAL_WORKER_CRON_ID, enabled, "(Saffron): MC: Normal")
-
-
 def reconcile_stale_done_statuses(issues: list[dict[str, Any]]) -> int:
     """Open issues must not be Done. Move stale Done statuses back to Backlog.
 
@@ -1238,7 +1215,7 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
     return changed
 
 
-def manage_crons() -> tuple[int, int]:
+def report_worker_queue_state() -> tuple[int, int]:
     normal_queue = get_dispatch_queue("normal")
     escalated_queue = get_dispatch_queue("escalated")
     queued_normal_pr_fixes = queued_pr_fixes("normal")
@@ -1252,30 +1229,26 @@ def manage_crons() -> tuple[int, int]:
     if queued_human_pr_fixes:
         print(f"  Blocked PR fixes needing human review: {len(queued_human_pr_fixes)}")
 
-    if normal_queue or queued_normal_pr_fixes:
-        print("  -> Keeping normal worker cron enabled")
-        set_normal_worker_cron(True)
-    else:
-        print("  -> No normal Dispatch work — disabling normal worker cron")
-        set_normal_worker_cron(False)
-
     escalated_ready = [i for i in escalated_queue if i.get("status") == "status/ready"]
     escalated_paused = (
         Path("/home/node/.openclaw/workspace-saffron/.state/escalated_paused").exists()
         or Path("/home/node/.openclaw/workspace-saffron/.state/varka_paused").exists()
     )
+    print("  Cron state: not modified by heartbeat/grooming")
+    if normal_queue or queued_normal_pr_fixes:
+        print("  Normal queue has actionable work or PR fixes")
+    else:
+        print("  Normal queue has no actionable work")
+
     if escalated_paused:
-        print("  -> Escalated worker manually paused (flag file present) — keeping disabled")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
+        print("  Escalated worker pause flag is present")
     elif escalated_ready or queued_escalated_pr_fixes:
         print("  Escalated queue items:")
         for item in escalated_ready[:10]:
             print(f"      {item.get('repoFullName', '?')} #{item.get('number', '?')}: {str(item.get('title') or '')[:70]}")
-        print("  -> Keeping escalated worker cron enabled")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, True, "(Saffron): MC: Escalated")
+        print("  Escalated queue has actionable work or PR fixes")
     else:
-        print("  -> No escalated Dispatch work — disabling escalated worker cron")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
+        print("  Escalated queue has no actionable work")
 
     return len(normal_queue), len(escalated_queue)
 
@@ -1388,8 +1361,8 @@ def main() -> int:
             f"  Backlog candidates for agent grooming: {backlog_candidates}"
         )
 
-    print("\n[*] Managing crons from Dispatch queues...")
-    normal_count, escalated_count = manage_crons()
+    print("\n[*] Inspecting worker queues...")
+    normal_count, escalated_count = report_worker_queue_state()
 
     print("\nSummary:")
     print(

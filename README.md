@@ -48,10 +48,10 @@ The Dispatch application lives separately at `misospace/dispatch`. This repo con
 | `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
 | `dispatch_worker_preflight.py` | Deterministic Normal/Escalated worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
 | `worker_result_guard.py` | Validate Normal/Escalated worker final text against the terminal worker contract |
-| `heartbeat.py` | Run deterministic heartbeat plumbing: Dispatch PR follow-up sync, scheduled sync, reconciliation, cron management, and Dispatch run reporting |
+| `heartbeat.py` | Run deterministic heartbeat plumbing: Dispatch PR follow-up sync, scheduled sync, reconciliation, worker queue visibility, and Dispatch run reporting |
 | `backlog_groomer.py` | Deterministic backlog candidate collector for Saffron-owned agent grooming |
 | `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
-| `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, cron enablement |
+| `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, and worker queue visibility |
 | `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
 | `wishlist_read_gpt_audit_board.py` | Compatibility reader for Dispatch escalated queue; does not query GitHub Projects |
 | `dispatch_reporter.py` | Report agent runs to Dispatch using only `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN` |
@@ -158,6 +158,9 @@ work; do not reintroduce direct model calls into scripts.
 Affected cron jobs:
 - `(Saffron): MC: Normal` — normal lane, uses Dispatch normal queue
 - `(Saffron): MC: Escalated` — escalated lane, uses Dispatch escalated queue
+
+Heartbeat/grooming reports queue pressure for these jobs but does not enable,
+disable, reschedule, retune, or otherwise edit cron definitions.
 
 ## Security
 
