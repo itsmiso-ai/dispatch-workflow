@@ -38,8 +38,9 @@ If sub-agent/tooling is unavailable and candidates exist, surface
 
 `dispatch-workflow/scripts/heartbeat.py` owns only deterministic heartbeat
 plumbing: Dispatch PR follow-up sync, best-effort Dispatch scheduled sync,
-deterministic Dispatch reconciliation/lane cleanup, cron enablement, and
-best-effort Dispatch run reporting.
+deterministic Dispatch reconciliation/lane cleanup, worker queue visibility,
+and best-effort Dispatch run reporting. Cron state is operator-owned; heartbeat
+must not enable, disable, or retune cron jobs.
 
 `dispatch-workflow/scripts/backlog_groomer.py` is deterministic only. It
 collects open `status/backlog` candidates plus unlabeled/no-status issues and writes a JSON request under
@@ -105,6 +106,8 @@ when DM delivery is suppressed.
 - `(Saffron): MC: Escalated` consumes escalated lane work.
 - Both check PR review-fix queue first, then Dispatch queue work.
 - Both consume exactly one actionable item, obey `nextAction`, report, and stop.
+- Heartbeat may report whether these queues have work, but must not change the
+  cron enabled state, schedule, model, delivery, or alert settings.
 
 ## Weekly Audit
 
