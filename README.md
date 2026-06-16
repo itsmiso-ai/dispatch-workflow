@@ -159,8 +159,22 @@ Affected cron jobs:
 - `(Saffron): MC: Normal` — normal lane, uses Dispatch normal queue
 - `(Saffron): MC: Escalated` — escalated lane, uses Dispatch escalated queue
 
-Heartbeat/grooming reports queue pressure for these jobs but does not enable,
-disable, reschedule, retune, or otherwise edit cron definitions.
+Heartbeat (Saffron agent) owns the policy decision for worker cron enabled
+state. The decision is made explicit by running:
+
+1. `scripts/dispatch_work_probe.py` — read-only probe answering "would this
+   lane/agent do work if the worker ran?"
+2. `scripts/dispatch_worker_cron.py --lane <lane> --enable|--disable
+   --reason "..." --apply` — the only actuator allowed to mutate worker cron
+   enabled state.
+
+`scripts/dispatch_worker_cron.py` only runs the whitelisted
+`openclaw cron edit <id> --enable|--disable` command. It refuses to touch
+schedule, model, prompt, delivery, alerts, or any other cron setting, and
+defaults to dry-run.
+
+`project_groom.py` is grooming/reporting only. It must not call
+`openclaw cron edit` or any cron mutation.
 
 ## Security
 
