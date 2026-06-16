@@ -37,6 +37,7 @@ scripts/*
 !scripts/audit_decompose.py
 !scripts/backlog_groomer.py
 !scripts/dispatch_work_update.py
+!scripts/dispatch_work_probe.py
 !scripts/dispatch_worker_preflight.py
 !scripts/issue_lane_judge.py
 !scripts/project_groom.py

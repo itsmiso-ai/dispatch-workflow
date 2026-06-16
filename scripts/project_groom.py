@@ -2,8 +2,9 @@
 """Dispatch-first grooming for Saffron work queues.
 
 GitHub issues/PRs are the source of truth for issue state, labels, and merged PRs.
-Dispatch owns work discovery, claims, and lane assignment. Cron scheduling is
-operator-owned and this script does not mutate it.
+Dispatch owns work discovery, claims, lane assignment, and worker cron
+enablement. Cron schedules, models, delivery, and alert settings are
+operator-owned.
 
 This script intentionally does not read or mutate GitHub Projects.
 """
@@ -24,8 +25,12 @@ from typing import Any
 
 from pr_fix_queue import queued_items as queued_pr_fixes
 
+from dispatch_work_probe import probe_work
+
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 ROOT = Path(__file__).resolve().parents[1]
+NORMAL_WORKER_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
+ESCALATED_WORKER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
 NORMAL_WORKER_AGENT = os.environ.get("DISPATCH_NORMAL_AGENT", "saffron-normal")
 ESCALATED_WORKER_AGENT = os.environ.get("DISPATCH_ESCALATED_AGENT", "saffron-escalated")
@@ -1215,42 +1220,114 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
     return changed
 
 
-def report_worker_queue_state() -> tuple[int, int]:
-    normal_queue = get_dispatch_queue("normal")
-    escalated_queue = get_dispatch_queue("escalated")
-    queued_normal_pr_fixes = queued_pr_fixes("normal")
-    queued_escalated_pr_fixes = queued_pr_fixes("escalated")
-    queued_human_pr_fixes = queued_pr_fixes("needs-human", include_blocked=True)
+def set_cron_enabled(job_id: str, enabled: bool, display_name: str) -> None:
+    """Set only cron enabled state via openclaw CLI.
 
-    print(f"  Dispatch normal queue: {len(normal_queue)}")
-    print(f"  Dispatch escalated queue: {len(escalated_queue)}")
-    print(f"  Queued normal PR fixes: {len(queued_normal_pr_fixes)}")
-    print(f"  Queued escalated PR fixes: {len(queued_escalated_pr_fixes)}")
-    if queued_human_pr_fixes:
-        print(f"  Blocked PR fixes needing human review: {len(queued_human_pr_fixes)}")
+    The heartbeat owns whether worker crons are on for queue pressure. It must
+    not edit schedule, model, delivery, prompt, or alert settings.
+    """
+    state = "ENABLED" if enabled else "DISABLED"
+    print(f"  [*] {display_name} -> {state}")
+    flag = "--enable" if enabled else "--disable"
+    try:
+        result = subprocess.run(
+            ["openclaw", "cron", "edit", job_id, flag],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:
+        print(f"  [!] openclaw cron edit error: {exc}")
+        return
 
-    escalated_ready = [i for i in escalated_queue if i.get("status") == "status/ready"]
-    escalated_paused = (
+    if result.returncode != 0:
+        print(f"  [!] openclaw cron edit failed: {result.stderr[:200]}")
+
+
+def set_normal_worker_cron(enabled: bool) -> None:
+    set_cron_enabled(NORMAL_WORKER_CRON_ID, enabled, "(Saffron): MC: Normal")
+
+
+def _escalated_paused() -> bool:
+    return (
         Path("/home/node/.openclaw/workspace-saffron/.state/escalated_paused").exists()
         or Path("/home/node/.openclaw/workspace-saffron/.state/varka_paused").exists()
     )
-    print("  Cron state: not modified by heartbeat/grooming")
-    if normal_queue or queued_normal_pr_fixes:
-        print("  Normal queue has actionable work or PR fixes")
-    else:
-        print("  Normal queue has no actionable work")
 
-    if escalated_paused:
-        print("  Escalated worker pause flag is present")
-    elif escalated_ready or queued_escalated_pr_fixes:
-        print("  Escalated queue items:")
-        for item in escalated_ready[:10]:
-            print(f"      {item.get('repoFullName', '?')} #{item.get('number', '?')}: {str(item.get('title') or '')[:70]}")
-        print("  Escalated queue has actionable work or PR fixes")
-    else:
-        print("  Escalated queue has no actionable work")
 
-    return len(normal_queue), len(escalated_queue)
+def _print_probe(label: str, probe: dict[str, Any]) -> None:
+    """Print a single probe result in a stable, scrapable form."""
+    action = probe.get("action") or "unknown"
+    should_run = bool(probe.get("shouldRunWorker"))
+    needs_attention = " needsAttention" if probe.get("needsAttention") else ""
+    reason = probe.get("reason") or ""
+    print(f"  {label} worker probe: action={action} shouldRunWorker={should_run}{needs_attention}")
+    if reason and action in {"stuck"}:
+        print(f"      reason: {reason[:200]}")
+
+
+def manage_crons() -> tuple[int, int]:
+    """Probe each lane via the shared worker-work probe and toggle worker crons.
+
+    The probe is the single source of truth for "would this lane/agent do work
+    if the worker ran?". It re-uses worker preflight logic (PR-fix, active
+    work, active follow-up, fresh ready queue) so heartbeat/grooming cannot
+    disable/suppress a worker that preflight would have kept busy. The probe
+    never claims work, never mutates status, and never edits labels — this
+    function only toggles cron enabled state based on the probe verdict.
+    """
+    normal_probe = probe_work("normal", NORMAL_WORKER_AGENT)
+    escalated_probe = probe_work("escalated", ESCALATED_WORKER_AGENT)
+
+    # Reporting block: action / shouldRunWorker / any stuck reason, so the
+    # heartbeat log shows why each cron ended up enabled or disabled.
+    _print_probe("Normal", normal_probe)
+    _print_probe("Escalated", escalated_probe)
+
+    queued_human_pr_fixes = queued_pr_fixes("needs-human", include_blocked=True)
+    if queued_human_pr_fixes:
+        print(f"  Blocked PR fixes needing human review: {len(queued_human_pr_fixes)}")
+
+    # Surface an itemized view of escalated ready items when work exists, so
+    # operators can see what would be claimed without having to query Dispatch.
+    if escalated_probe.get("hasWork") and escalated_probe.get("action") in {"ready-issue", "claim-ready-issue"}:
+        packet = escalated_probe.get("packet") or {}
+        item = packet.get("item") if isinstance(packet, dict) else None
+        if isinstance(item, dict):
+            print("  Escalated queue items:")
+            print(
+                f"      {item.get('repoFullName', '?')} #{item.get('number', '?')}: "
+                f"{str(item.get('title') or '')[:70]}"
+            )
+
+    # Cron enable/disable based purely on probe verdicts. Manual pause flags
+    # still win for the escalated lane, same as before.
+    normal_has_work = bool(normal_probe.get("hasWork"))
+    if normal_has_work:
+        print("  -> Keeping normal worker cron enabled")
+        set_normal_worker_cron(True)
+    else:
+        print("  -> No normal Dispatch work — disabling normal worker cron")
+        set_normal_worker_cron(False)
+
+    if _escalated_paused():
+        print("  -> Escalated worker manually paused (flag file present) — keeping disabled")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
+    elif bool(escalated_probe.get("hasWork")):
+        print("  -> Keeping escalated worker cron enabled")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, True, "(Saffron): MC: Escalated")
+    else:
+        print("  -> No escalated Dispatch work — disabling escalated worker cron")
+        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
+
+    # Each tuple element is 1 when the probe identified a single concrete
+    # work item, else 0. The summary line uses these as booleans, not
+    # queue-length counts — the probe is the source of truth, not a raw
+    # queue read.
+    def _probe_count(probe: dict[str, Any]) -> int:
+        return 1 if probe.get("hasWork") else 0
+
+    return _probe_count(normal_probe), _probe_count(escalated_probe)
 
 
 def main() -> int:
@@ -1361,13 +1438,13 @@ def main() -> int:
             f"  Backlog candidates for agent grooming: {backlog_candidates}"
         )
 
-    print("\n[*] Inspecting worker queues...")
-    normal_count, escalated_count = report_worker_queue_state()
+    print("\n[*] Managing crons from Dispatch queues...")
+    normal_work, escalated_work = manage_crons()
 
     print("\nSummary:")
     print(
-        f"  dispatch:{len(issues)} cached,{open_count} open,{normal_count} normal_queue,"
-        f"{escalated_count} escalated_queue,{closed} closed,"
+        f"  dispatch:{len(issues)} cached,{open_count} open,{normal_work} normal_work,"
+        f"{escalated_work} escalated_work,{closed} closed,"
         f"{labels_changed} labels_changed,{changed_lanes} lane_updates,{backlog_candidates} "
         "backlog_candidates_for_agent"
     )
