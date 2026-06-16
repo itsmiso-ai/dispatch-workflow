@@ -38,9 +38,20 @@ If sub-agent/tooling is unavailable and candidates exist, surface
 
 `dispatch-workflow/scripts/heartbeat.py` owns only deterministic heartbeat
 plumbing: Dispatch PR follow-up sync, best-effort Dispatch scheduled sync,
-deterministic Dispatch reconciliation/lane cleanup, worker queue visibility,
-and best-effort Dispatch run reporting. Cron state is operator-owned; heartbeat
-must not enable, disable, or retune cron jobs.
+deterministic Dispatch reconciliation/lane cleanup, worker queue visibility
+(via `dispatch_work_probe.py`), and best-effort Dispatch run reporting. The
+deterministic plumbing never mutates cron state.
+
+`dispatch-workflow/scripts/dispatch_work_probe.py` is read-only. It answers
+"would this lane/agent do work if the worker ran?" by wrapping
+`dispatch_worker_preflight.build_packet(claim=False)`. It is the single source
+of truth for heartbeat/grooming work detection.
+
+`dispatch-workflow/scripts/dispatch_worker_cron.py` is the only actuator
+allowed to mutate worker cron enabled state. It only runs the whitelisted
+`openclaw cron edit <id> --enable|--disable` command and refuses to touch
+schedule, model, prompt, delivery, alerts, or any other cron setting. It
+defaults to dry-run; pass `--apply` to actually mutate.
 
 `dispatch-workflow/scripts/backlog_groomer.py` is deterministic only. It
 collects open `status/backlog` candidates plus unlabeled/no-status issues and writes a JSON request under
@@ -100,14 +111,46 @@ when DM delivery is suppressed.
 - Stale open-issue `status/done` cleanup must go through Dispatch status APIs.
 - Renovate issues are excluded unless explicitly requested.
 
-## Worker Crons
+## Worker Crons (explicit policy + dedicated actuator)
 
 - `(Saffron): MC: Normal` consumes normal lane work.
 - `(Saffron): MC: Escalated` consumes escalated lane work.
 - Both check PR review-fix queue first, then Dispatch queue work.
 - Both consume exactly one actionable item, obey `nextAction`, report, and stop.
-- Heartbeat may report whether these queues have work, but must not change the
-  cron enabled state, schedule, model, delivery, or alert settings.
+
+**Heartbeat owns the policy decision for worker cron enabled state.** The
+flow is explicit and boring:
+
+1. Run Dispatch sync / deterministic heartbeat plumbing (heartbeat.py).
+2. Run `dispatch_work_probe.py` for normal and escalated lanes. The probe
+   result is the source of truth for whether the worker would do work.
+3. If `probe.hasWork == true`, call
+   `python3 scripts/dispatch_worker_cron.py --lane <lane> --enable --reason "<probe verdict>" --apply`.
+4. If `probe.hasWork == false`, call
+   `python3 scripts/dispatch_worker_cron.py --lane <lane> --disable --reason "<probe verdict>" --apply`.
+5. If `probe.action == stuck`, do not silently disable. Surface
+   `needsAttention` and keep the cron state unchanged until the heartbeat
+   (or a human) decides what to do.
+6. Run backlog grooming intelligence only after deterministic probes/sync
+   are complete.
+
+**Allowed cron mutation:**
+
+- enabled/disabled only
+- only via `scripts/dispatch_worker_cron.py`
+- only with `--apply`
+
+**Forbidden cron mutation (the actuator will not run these):**
+
+- schedule
+- model
+- prompt
+- delivery
+- alerts
+- any unrelated cron config
+
+**Forbidden pattern:** `project_groom.py` must never call `openclaw cron edit`
+or any cron mutation. It is grooming/reporting only.
 
 ## Weekly Audit
 

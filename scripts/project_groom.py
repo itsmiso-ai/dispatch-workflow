@@ -29,8 +29,6 @@ from dispatch_work_probe import probe_work
 
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 ROOT = Path(__file__).resolve().parents[1]
-NORMAL_WORKER_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
-ESCALATED_WORKER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
 NORMAL_WORKER_AGENT = os.environ.get("DISPATCH_NORMAL_AGENT", "saffron-normal")
 ESCALATED_WORKER_AGENT = os.environ.get("DISPATCH_ESCALATED_AGENT", "saffron-escalated")
@@ -1220,32 +1218,6 @@ def reconcile_lanes(issues: list[dict[str, Any]]) -> int:
     return changed
 
 
-def set_cron_enabled(job_id: str, enabled: bool, display_name: str) -> None:
-    """Set only cron enabled state via openclaw CLI.
-
-    The heartbeat owns whether worker crons are on for queue pressure. It must
-    not edit schedule, model, delivery, prompt, or alert settings.
-    """
-    state = "ENABLED" if enabled else "DISABLED"
-    print(f"  [*] {display_name} -> {state}")
-    flag = "--enable" if enabled else "--disable"
-    try:
-        result = subprocess.run(
-            ["openclaw", "cron", "edit", job_id, flag],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as exc:
-        print(f"  [!] openclaw cron edit error: {exc}")
-        return
-
-    if result.returncode != 0:
-        print(f"  [!] openclaw cron edit failed: {result.stderr[:200]}")
-
-
-def set_normal_worker_cron(enabled: bool) -> None:
-    set_cron_enabled(NORMAL_WORKER_CRON_ID, enabled, "(Saffron): MC: Normal")
 
 
 def _escalated_paused() -> bool:
@@ -1300,25 +1272,36 @@ def manage_crons() -> tuple[int, int]:
                 f"{str(item.get('title') or '')[:70]}"
             )
 
-    # Cron enable/disable based purely on probe verdicts. Manual pause flags
-    # still win for the escalated lane, same as before.
-    normal_has_work = bool(normal_probe.get("hasWork"))
-    if normal_has_work:
-        print("  -> Keeping normal worker cron enabled")
-        set_normal_worker_cron(True)
-    else:
-        print("  -> No normal Dispatch work — disabling normal worker cron")
-        set_normal_worker_cron(False)
+    # Cron enable/disable RECOMMENDATION only. The heartbeat (Saffron agent)
+    # is the only place that actually mutates worker cron enabled state, via
+    # scripts/dispatch_worker_cron.py --apply. project_groom.py never calls
+    # openclaw cron edit.
+    escalated_paused = _escalated_paused()
 
-    if _escalated_paused():
-        print("  -> Escalated worker manually paused (flag file present) — keeping disabled")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
-    elif bool(escalated_probe.get("hasWork")):
-        print("  -> Keeping escalated worker cron enabled")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, True, "(Saffron): MC: Escalated")
+    def _recommendation(probe: dict[str, Any]) -> str:
+        if probe.get("needsAttention"):
+            return "keep (probe stuck — needs attention)"
+        if probe.get("hasWork"):
+            return "enable"
+        return "disable"
+
+    normal_rec = _recommendation(normal_probe)
+    print(
+        f"  -> Cron recommendation: Normal -> {normal_rec} "
+        f"(apply via scripts/dispatch_worker_cron.py)"
+    )
+
+    if escalated_paused:
+        print(
+            "  -> Cron recommendation: Escalated -> keep disabled "
+            "(manual pause flag present — operator-owned)"
+        )
     else:
-        print("  -> No escalated Dispatch work — disabling escalated worker cron")
-        set_cron_enabled(ESCALATED_WORKER_CRON_ID, False, "(Saffron): MC: Escalated")
+        escalated_rec = _recommendation(escalated_probe)
+        print(
+            f"  -> Cron recommendation: Escalated -> {escalated_rec} "
+            f"(apply via scripts/dispatch_worker_cron.py)"
+        )
 
     # Each tuple element is 1 when the probe identified a single concrete
     # work item, else 0. The summary line uses these as booleans, not
@@ -1336,7 +1319,7 @@ def main() -> int:
     parser.add_argument("--list-tracked-repos", action="store_true", help="Print enabled tracked repos from Dispatch and exit")
     parser.add_argument("--groom-backlog", action="store_true", help="Collect backlog candidates for Saffron-owned grooming")
     parser.add_argument("--groom-backlog-use-llm", action="store_true", help="Removed; scripts must not call models for grooming")
-    parser.add_argument("--groom-backlog-only", action="store_true", help="Only collect backlog candidates; skip normal closure/lane/cron mutations")
+    parser.add_argument("--groom-backlog-only", action="store_true", help="Only collect backlog candidates; skip normal closure/lane mutations")
     parser.add_argument("--groom-backlog-apply", action="store_true", help="Removed; Saffron applies authored grooming results through Dispatch")
     parser.add_argument("--groom-backlog-max", type=int, default=5, help="Maximum backlog candidates to collect (-1 for all)")
     parser.add_argument("--groom-backlog-force", action="store_true", help="Compatibility flag; candidate collection does not suppress unchanged issues")
