@@ -159,19 +159,37 @@ Affected cron jobs:
 - `(Saffron): MC: Normal` — normal lane, uses Dispatch normal queue
 - `(Saffron): MC: Escalated` — escalated lane, uses Dispatch escalated queue
 
-Heartbeat (Saffron agent) owns the policy decision for worker cron enabled
-state. The decision is made explicit by running:
+Heartbeat (Saffron agent) owns the policy decision for worker cron
+enabled state. The decision is made explicit by running, in this order:
 
-1. `scripts/dispatch_work_probe.py` — read-only probe answering "would this
-   lane/agent do work if the worker ran?"
-2. `scripts/dispatch_worker_cron.py --lane <lane> --enable|--disable
-   --reason "..." --apply` — the only actuator allowed to mutate worker cron
-   enabled state.
+```bash
+# 1. Probe both lanes. The probe is the source of truth for work.
+python3 scripts/dispatch_work_probe.py --lane normal --json
+python3 scripts/dispatch_work_probe.py --lane escalated --json
+```
 
-`scripts/dispatch_worker_cron.py` only runs the whitelisted
+```bash
+# 2. If probe.hasWork == true, enable the cron for that lane:
+python3 scripts/dispatch_worker_cron.py --lane normal   --enable --reason "<probe verdict>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated   --enable --reason "<probe verdict>" --apply --json
+```
+
+```bash
+# 3. If probe.hasWork == false, disable the cron for that lane:
+python3 scripts/dispatch_worker_cron.py --lane normal   --disable --reason "<probe verdict>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated   --disable --reason "<probe verdict>" --apply --json
+```
+
+```bash
+# 4. If probe.action == "stuck", surface `needsAttention` in the heartbeat
+#    reply and do NOT silently enable or disable.
+```
+
+`scripts/dispatch_worker_cron.py` is the only actuator allowed to mutate
+worker cron enabled state. It only runs the whitelisted
 `openclaw cron edit <id> --enable|--disable` command. It refuses to touch
 schedule, model, prompt, delivery, alerts, or any other cron setting, and
-defaults to dry-run.
+defaults to dry-run. Pass `--apply` to actually mutate.
 
 `project_groom.py` is grooming/reporting only. It must not call
 `openclaw cron edit` or any cron mutation.
