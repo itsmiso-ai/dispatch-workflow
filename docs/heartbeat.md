@@ -118,29 +118,66 @@ when DM delivery is suppressed.
 - Both check PR review-fix queue first, then Dispatch queue work.
 - Both consume exactly one actionable item, obey `nextAction`, report, and stop.
 
-**Heartbeat owns the policy decision for worker cron enabled state.** The
-flow is explicit and boring:
+### The little cron goblin gets a badge and a desk
 
-1. Run Dispatch sync / deterministic heartbeat plumbing (heartbeat.py).
-2. Run `dispatch_work_probe.py` for normal and escalated lanes. The probe
-   result is the source of truth for whether the worker would do work.
-3. If `probe.hasWork == true`, call
-   `python3 scripts/dispatch_worker_cron.py --lane <lane> --enable --reason "<probe verdict>" --apply`.
-4. If `probe.hasWork == false`, call
-   `python3 scripts/dispatch_worker_cron.py --lane <lane> --disable --reason "<probe verdict>" --apply`.
-5. If `probe.action == stuck`, do not silently disable. Surface
-   `needsAttention` and keep the cron state unchanged until the heartbeat
-   (or a human) decides what to do.
-6. Run backlog grooming intelligence only after deterministic probes/sync
-   are complete.
+Cron state is no longer mutated as a hidden side effect of grooming. The
+heartbeat (Saffron agent) owns the **policy decision**. The dedicated
+actuator `scripts/dispatch_worker_cron.py` is the only thing allowed to
+mutate the enabled/disabled flag. Schedule, model, prompt, delivery, and
+alerts stay operator-owned and out of scope for the actuator.
 
-**Allowed cron mutation:**
+The boundary is now:
+
+- **Heartbeat (Saffron):** policy. Decides whether the worker should run.
+- **`scripts/dispatch_work_probe.py`:** read-only. Answers "would this
+  lane/agent do work if the worker ran?".
+- **`scripts/dispatch_worker_cron.py`:** deterministic actuator. Enable or
+  disable only. Refuses any other cron setting.
+- **`scripts/project_groom.py`:** grooming/reporting only. Never mutates
+  cron state.
+
+### The exact flow (do this, in this order)
+
+After `python3 scripts/heartbeat.py` returns, the heartbeat **must** run
+these commands before doing anything else. Read each probe's JSON, then call
+the actuator with the matching `--enable` or `--disable` flag and the
+probe verdict in the reason.
+
+```bash
+# 1. Probe both lanes. The probe is the source of truth for work.
+python3 scripts/dispatch_work_probe.py --lane normal --json
+python3 scripts/dispatch_work_probe.py --lane escalated --json
+```
+
+```bash
+# 2. If probe.hasWork == true, enable the cron for that lane:
+python3 scripts/dispatch_worker_cron.py --lane normal   --enable --reason "<probe verdict, e.g. active-follow-up>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated   --enable --reason "<probe verdict, e.g. ready-issue>" --apply --json
+```
+
+```bash
+# 3. If probe.hasWork == false, disable the cron for that lane:
+python3 scripts/dispatch_worker_cron.py --lane normal   --disable --reason "<probe verdict, e.g. clear>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated   --disable --reason "<probe verdict, e.g. clear>" --apply --json
+```
+
+```bash
+# 4. If probe.action == "stuck", do NOT silently enable or disable.
+#    Surface `needsAttention` in the heartbeat reply. Leave cron state
+#    unchanged and let the next heartbeat (or a human) decide.
+```
+
+No other `openclaw cron edit` invocation is allowed. The actuator refuses
+schedule/model/prompt/delivery/alerts flags and only emits
+`openclaw cron edit <id> --enable|--disable`.
+
+### Allowed cron mutation
 
 - enabled/disabled only
 - only via `scripts/dispatch_worker_cron.py`
 - only with `--apply`
 
-**Forbidden cron mutation (the actuator will not run these):**
+### Forbidden cron mutation (the actuator will not run these)
 
 - schedule
 - model
@@ -149,8 +186,10 @@ flow is explicit and boring:
 - alerts
 - any unrelated cron config
 
-**Forbidden pattern:** `project_groom.py` must never call `openclaw cron edit`
-or any cron mutation. It is grooming/reporting only.
+### Forbidden pattern
+
+`project_groom.py` must never call `openclaw cron edit` or any cron
+mutation. It is grooming/reporting only.
 
 ## Weekly Audit
 
