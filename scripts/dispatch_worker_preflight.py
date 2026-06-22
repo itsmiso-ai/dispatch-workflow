@@ -27,10 +27,11 @@ import urllib.request
 from typing import Any
 
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
-VALID_LANES = {"normal", "escalated"}
+VALID_LANES = {"local", "cloud", "frontier"}
 LANE_AGENT_DEFAULTS = {
-    "normal": "saffron-normal",
-    "escalated": "saffron-escalated",
+    "local": "saffron-local",
+    "cloud": "saffron-cloud",
+    "frontier": "saffron-frontier",
 }
 RENOVATE_TITLE_RE = re.compile(r"(?:dependency dashboard|^update (?:dependency|image|deps?)|renovate)", re.I)
 
@@ -101,8 +102,7 @@ def status_of(item: dict[str, Any]) -> str | None:
 def lane_of(item: dict[str, Any]) -> str | None:
     lane = item.get("lane") or item.get("currentLane")
     if lane:
-        lane_s = str(lane).lower()
-        return "escalated" if lane_s == "gpt" else lane_s
+        return str(lane).lower()
     return None
 
 
@@ -127,7 +127,11 @@ def repo_workspace_ok(repo_full_name: str) -> tuple[bool, str]:
 
 
 def terminal_clear(lane: str) -> str:
-    return "Escalated lane is clear." if lane == "escalated" else "Pipeline is clear."
+    if lane == "frontier":
+        return "Frontier lane is clear."
+    if lane == "cloud":
+        return "Cloud lane is clear."
+    return "Pipeline is clear."
 
 
 def is_renovate(item: dict[str, Any]) -> bool:
@@ -142,13 +146,15 @@ def infer_lane_from_issue(issue: dict[str, Any], agent_name: str) -> tuple[str |
         return explicit, "dispatch-issue-lane"
 
     labels = labels_of(issue)
-    if "needs-gpt" in labels or "needs-escalation" in labels or "escalated" in labels:
-        return "escalated", "labels"
+    if "needs-gpt" in labels or "needs-escalation" in labels or "escalated" in labels or "frontier" in labels:
+        return "frontier", "labels"
     if f"agent/{agent_name}".lower() in labels:
-        if agent_name.endswith("-normal"):
-            return "normal", "agent-label"
-        if agent_name.endswith("-escalated"):
-            return "escalated", "agent-label"
+        if agent_name.endswith("-local"):
+            return "local", "agent-label"
+        if agent_name.endswith("-cloud"):
+            return "cloud", "agent-label"
+        if agent_name.endswith("-frontier"):
+            return "frontier", "agent-label"
     return None, "unverified"
 
 
