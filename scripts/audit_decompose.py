@@ -35,6 +35,7 @@ TITLE_MAX = 120
 PRIORITY_RE = re.compile(r"^\s*(?:\*\*)?\[?P([0-3])\]?\s*(?:[-:\u2013\u2014]|--)\s*", re.I)
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 H2_RE = re.compile(r"^##\s+", re.M)
+ISSUE_REF_RE = re.compile(r"#\d+")
 
 
 @dataclass(frozen=True)
@@ -561,8 +562,18 @@ def tracked_repos() -> list[str]:
 def is_candidate_parent(issue: dict[str, Any]) -> bool:
     title = str(issue.get("title") or "").lower()
     body = str(issue.get("body") or "")
+    # Skip only if the marker block already lists concrete child issue references.
+    # The audit-writing template includes an empty marker block with a placeholder
+    # sentence, so a naive "marker present = already decomposed" check skips
+    # never-decomposed umbrellas. Check for "#NNN" issue refs inside the block.
     if DECOMPOSE_OPEN in body:
-        return False
+        ms = body.find(DECOMPOSE_OPEN)
+        me = body.find(DECOMPOSE_CLOSE, ms)
+        if me < 0:
+            me = len(body)
+        block = body[ms + len(DECOMPOSE_OPEN):me].strip()
+        if block and ISSUE_REF_RE.search(block):
+            return False
     if "weekly tech debt audit" not in title and "audit" not in title:
         return False
     return bool(extract_h2_section(body, "Recommended issue breakdown") or extract_h2_section(body, "Top findings"))
