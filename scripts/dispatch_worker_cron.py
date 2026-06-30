@@ -21,9 +21,9 @@ Default mode is dry-run so an accidental invocation cannot mutate cron state.
 Pass `--apply` to actually run `openclaw cron edit`.
 
 Usage:
-    python3 scripts/dispatch_worker_cron.py --lane normal --enable --reason "probe has work" --apply --json
+    python3 scripts/dispatch_worker_cron.py --lane local --enable --reason "probe has work" --apply --json
     python3 scripts/dispatch_worker_cron.py --lane normal --disable --reason "probe clear" --dry-run --json
-    python3 scripts/dispatch_worker_cron.py --lane escalated --enable --reason "active follow-up" --apply --json
+    python3 scripts/dispatch_worker_cron.py --lane frontier --enable --reason "active follow-up" --apply --json
 """
 
 from __future__ import annotations
@@ -36,12 +36,14 @@ import sys
 from typing import Any
 
 # Hardcoded defaults — env vars can override but cannot disable the actuator.
-DEFAULT_NORMAL_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
-DEFAULT_ESCALATED_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
+DEFAULT_LOCAL_CRON_ID = "6b09bed4-cfbe-4c35-bbee-2b66c5ef17aa"
+DEFAULT_CLOUD_CRON_ID = "8a6daaff-641b-4e1c-a263-f3814b043539"
+DEFAULT_FRONTIER_CRON_ID = "1723278d-2eaa-435b-9fda-0efe8febb30b"
 
 CRON_IDS = {
-    "normal": os.environ.get("DISPATCH_NORMAL_CRON_ID", DEFAULT_NORMAL_CRON_ID),
-    "escalated": os.environ.get("DISPATCH_ESCALATED_CRON_ID", DEFAULT_ESCALATED_CRON_ID),
+    "local": os.environ.get("DISPATCH_LOCAL_CRON_ID", DEFAULT_LOCAL_CRON_ID),
+    "cloud": os.environ.get("DISPATCH_CLOUD_CRON_ID", DEFAULT_CLOUD_CRON_ID),
+    "frontier": os.environ.get("DISPATCH_FRONTIER_CRON_ID", DEFAULT_FRONTIER_CRON_ID),
 }
 
 # Whitelist of allowed `openclaw cron edit` invocations. Anything outside this
@@ -116,7 +118,7 @@ def main() -> int:
         "--lane",
         required=True,
         choices=sorted(CRON_IDS.keys()),
-        help="Worker lane: normal or escalated",
+        help="Worker lane: local, cloud, or frontier",
     )
     enable_group = parser.add_mutually_exclusive_group(required=True)
     enable_group.add_argument(

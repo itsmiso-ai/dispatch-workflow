@@ -4,196 +4,212 @@ Dispatch workflow scripts for the Saffron agent workspace.
 
 **Owner:** Saffron (OpenClaw agent) — `itsmiso-ai` account
 
-**Purpose:** Version-controlled scripts and workflow documentation for the Dispatch integration layer.
+**Purpose:** Version-controlled scripts, runbooks, and workflow documentation
+for the Dispatch integration layer. This repo is the agent-side companion to
+the Dispatch application (`misospace/dispatch`).
 
-This repository is intended to be safe to make public: it should contain only
-workflow code, runbooks, and docs. Runtime state, credentials, OpenClaw
-configuration, memory, cron state, and local workspace artifacts are excluded.
+Intended to be safe to make public: contains only workflow code, runbooks, and
+docs. Runtime state, credentials, OpenClaw configuration, memory, cron state,
+and local workspace artifacts are excluded.
 
-## Scope
+## Architecture Overview
 
-This repo tracks Dispatch workflow files from the Saffron agent workspace:
-- Python scripts for heartbeat grooming, lane judging, backlog syncing
-- Bash/shell utility scripts
-- Workflow documentation and runbooks
-- Sanitized cron prompt templates for Dispatch-owned automation
-- Public-safe heartbeat contract reference at `docs/heartbeat.md`
+```
+ ┌─────────────┐    heartbeat     ┌─────────────────┐
+ │  Saffron    │ ──────────────▶  │   Dispatch API   │
+ │  (agent)    │                  │  (misospace/     │
+ │             │  ◀────────────── │   dispatch)      │
+ │             │   queue / work   │                  │
+ │             │                  │  Postgres cache  │
+ │             │                  │       │          │
+ │             │                  │       ▼          │
+ │             │                  │  GitHub Issues   │
+ │             │                  │  (source of      │
+ │             │                  │   truth)         │
+ └──────┬──────┘                  └─────────────────┘
+        │
+        │ spawn
+        ▼
+ ┌─────────────────────────────────────┐
+ │  Worker sessions (cron-triggered)    │
+ │  local   → nvidia     (saffron-local)│
+ │  cloud   → dsv4p      (saffron-cloud)│
+ │  frontier→ glm-5.2    (saffron-frontier)│
+ └─────────────────────────────────────┘
+```
 
-## Excluded
+**Saffron** is the main agent session. It runs the hourly heartbeat, claims
+work from Dispatch, does engineering, and spawns worker sessions.
 
-The following are intentionally excluded and must never be committed:
-- **HEARTBEAT.md** — PVC-backed runtime copy; version the public-safe reference
-  copy at `docs/heartbeat.md` instead
-- **cron/jobs.json** — Runtime state, managed by `openclaw cron`
-- **.state/*** — Runtime queue state and watch lists
-- **pr_fix_queue.json** — Legacy local queue state; active PR-fix state lives in Dispatch
-- Any file containing tokens, secrets, or credentials
-- Any OpenClaw agent config, session, or memory files
-- home-ops or dispatch app code
+**Dispatch** (`misospace/dispatch`) owns the queue: work discovery, claims,
+leases, checkpoints, lane assignment, status lifecycle, and `nextAction`.
+Saffron consumes work through Dispatch APIs — it does not locally groom
+backlog, judge lanes, or sync GitHub Projects.
 
-Cron prompts may be versioned only as sanitized templates under
-`cron-prompts/`. Do not commit schedules, delivery targets, runtime state,
-channel IDs, token values, local operator-only prompts, or the raw
-`cron/jobs.json` file.
+**Workers** are isolated cron-triggered sessions that consume one actionable
+item per run from their assigned lane.
 
-## Relationship to Dispatch App
+### Lane Model
 
-The Dispatch application lives separately at `misospace/dispatch`. This repo contains only the agent-side workflow scripts that interact with Dispatch as a consumer. 
+Dispatch assigns issues to one of three lanes based on complexity and model
+requirements:
+
+| Lane | Cron Name | Model | Agent Name | Purpose |
+|------|-----------|-------|------------|---------|
+| `local` | `(Saffron): Dispatch - Local` | nvidia | `saffron-local` | Scoped implementation, single-file fixes, edits |
+| `cloud` | `(Saffron): Dispatch - Cloud` | dsv4p | `saffron-cloud` | Multi-file work, inference across files/services |
+| `frontier` | `(Saffron): Dispatch - Frontier` | glm-5.2 | `saffron-frontier` | High-complexity design, escalated work |
+
+### Grooming
+
+Grooming is owned by Dispatch's hosted groomer — Saffron does not run local
+grooming heuristics or model-based lane judgment. The heartbeat checks for
+Dispatch-assigned grooming work via `GET /api/agents/saffron/next-task?mode=groom`
+and triggers the hosted groomer via `POST /api/groomer/run` when work exists.
+
+### Status Contract
+
+| Status | Meaning |
+|--------|---------|
+| `status/backlog` | needs triage/grooming; not claimable |
+| `status/ready` | groomed/actionable; claimable |
+| `status/in-progress` | claimed or implementation started |
+| `status/in-review` | PR opened; issue still open |
+| `status/done` | GitHub issue closed/terminal only |
+
+Opening or updating a PR is not Done. Open issue + open PR = `status/in-review`.
+
+## Heartbeat
+
+The hourly heartbeat runs a deterministic script, then checks for grooming
+work. The procedure is documented in `docs/heartbeat.md`.
+
+```bash
+python3 scripts/heartbeat.py
+```
+
+The script:
+1. Calls `POST /api/agents/saffron/heartbeat` (server-side sync, reconciliation, AgentRun recording)
+2. Probes all three lanes for work availability
+3. Toggles worker crons based on probe verdicts
+4. Checks for Dispatch-assigned grooming work
+
+After the script returns, the Saffron agent handles any grooming work by
+triggering the hosted groomer, or replies `HEARTBEAT_OK` if there is nothing
+to surface.
+
+## Worker Execution
+
+Workers are isolated sessions triggered by cron. Each worker:
+
+1. Runs deterministic preflight (`dispatch_worker_preflight.py`)
+2. Checks PR-fix queue first (takes precedence over issue work)
+3. Resumes active work if Dispatch returns a checkpoint/nextAction
+4. Otherwise claims one `status/ready` item from its lane
+5. Does one bounded step
+6. Updates Dispatch (checkpoint + status)
+7. Stops with a lane-specific final form
+
+Worker behavior is governed by runbooks in `worker-runbooks/` and cron prompts
+in `cron-prompts/`.
+
+### Preflight Actions
+
+| Action | Meaning |
+|--------|---------|
+| `clear` | No work; reply terminal and stop |
+| `stuck` | Needs attention; reply terminal and stop |
+| `pr-fix` | Push to existing PR branch only |
+| `resume-active-work` | Obey returned `nextAction` exactly |
+| `claim-ready-issue` | Implement the claimed Ready issue |
+| `active-follow-up` | Address failing checks / review feedback on active PR |
+
+### Direct Push Rule (Misospace Only)
+
+All worker branches push directly to `misospace/*` origin. No forks exist for
+`misospace/*` repos. After creating a PR, verify:
+
+```bash
+gh pr view --json isCrossRepository   # must be false
+```
+
+Cross-repo/fork PRs break the AI PR review CI because GitHub does not forward
+secrets to fork PR runs.
 
 ## Scripts
 
+### Active Scripts
+
 | Script | Purpose |
 |--------|---------|
-| `issue_lane_judge.py` | Classify issues into `normal`/`escalated`/`backlog` lanes |
-| `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue management |
-| `dispatch_worker_preflight.py` | Deterministic Normal/Escalated worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
-| `worker_result_guard.py` | Validate Normal/Escalated worker final text against the terminal worker contract |
-| `heartbeat.py` | Run deterministic heartbeat plumbing: Dispatch PR follow-up sync, scheduled sync, reconciliation, worker queue visibility, and Dispatch run reporting |
-| `backlog_groomer.py` | Deterministic backlog candidate collector for Saffron-owned agent grooming |
-| `project_backlog_sync.py` | Compatibility wrapper for Dispatch scheduled sync (`POST /api/sync/scheduled`); no GitHub Projects access |
-| `project_groom.py` | Dispatch v0.3 grooming: scheduled sync, status reconciliation, lane classification, and worker queue visibility |
-| `wishlist_read_board.py` | Compatibility reader for Dispatch normal queue; does not query GitHub Projects |
-| `wishlist_read_gpt_audit_board.py` | Compatibility reader for Dispatch escalated queue; does not query GitHub Projects |
-| `dispatch_reporter.py` | Report agent runs to Dispatch using only `DISPATCH_URL`/`DISPATCH_AGENT_TOKEN` |
+| `heartbeat.py` | Dispatch-native heartbeat: server-side sync, lane probing, cron toggle, grooming check |
+| `dispatch_worker_preflight.py` | Deterministic worker preflight: PR-fix, active work, lane verification, queue selection, optional claim |
+| `dispatch_worker_cron.py` | Actuator for worker cron enable/disable only. Refuses schedule/model/prompt/delivery/alerts changes |
+| `dispatch_work_probe.py` | Read-only lane work probe. Answers "would this lane do work if the worker ran?" |
 | `dispatch_work_update.py` | Update Dispatch checkpoints and issue status from worker sessions |
+| `dispatch_reporter.py` | Report agent runs to Dispatch |
+| `worker_result_guard.py` | Validate worker final text against terminal contract |
 | `research_before_task.py` | Research GitHub issues before implementing |
-| `sync_summary.py` | Compact Dispatch sync summary helper |
+| `audit_decompose.py` | Nightly audit decomposer: creates child issues from audit umbrella parents |
+| `extract_templates.py` | Extract cron prompt templates from live cron jobs |
 
-## Cron Prompt Templates
+### Deprecated Scripts
+
+These scripts are retained for compatibility but are **not invoked** by the
+current heartbeat or worker flow. Dispatch APIs have replaced their functions.
+
+| Script | Status |
+|--------|--------|
+| `project_backlog_sync.py` | Deprecated — Dispatch heartbeat handles sync |
+| `project_groom.py` | Deprecated — Dispatch owns grooming/lane/status lifecycle |
+| `backlog_groomer.py` | Deprecated — Dispatch `next-task?mode=groom` surfaces candidates |
+| `issue_lane_judge.py` | Deprecated — Dispatch owns lane assignment |
+| `wishlist_read_board.py` | Deprecated — Use `GET /api/agents/{agentName}/queue` |
+| `wishlist_read_gpt_audit_board.py` | Deprecated — Use `GET /api/agents/{agentName}/queue` |
+| `sync_summary.py` | Deprecated — Wrapper around deprecated sync |
+| `pr_fix_queue.py` | Compatibility CLI for Dispatch-backed PR review-fix queue |
+
+## Cron Prompts
 
 `cron-prompts/` contains public-safe source templates for Dispatch workflow
-cron prompts. These templates intentionally use placeholders such as
-`{{WORKFLOW_DIR}}`, `{{DISPATCH_NORMAL_AGENT}}`, and
-`{{BLOCKED_MERGE_REPOS}}` instead of live runtime values.
+cron prompts. These templates use placeholders (`{{WORKFLOW_DIR}}`,
+`{{DISPATCH_LOCAL_AGENT}}`, etc.) instead of live runtime values.
 
-The templates are documentation and review artifacts. Runtime cron jobs are
-still managed by `openclaw cron`; `cron/jobs.json` remains excluded because it
-contains schedules, delivery targets, model overrides, state, and other
-environment-specific data.
+Templates are documentation and review artifacts. Runtime cron jobs are managed
+by `openclaw cron`; `cron/jobs.json` remains excluded (contains schedules,
+delivery targets, model overrides, state, and environment-specific data).
 
-## Dispatch v0.3 Worker Semantics
+| Template | Lane |
+|----------|------|
+| `local-worker.md` | Local lane worker prompt |
+| `cloud-worker.md` | Cloud lane worker prompt |
+| `frontier-worker.md` | Frontier lane worker prompt |
+| `daily-pr-review.md` | Daily PR review prompt |
+| `weekly-audit.md` | Weekly Misospace audit prompt |
+| `nightly-audit-decomposer.md` | Nightly audit decomposition prompt |
 
-Worker cron prompts no longer reference GitHub Project boards. Instead, they consume work from Dispatch queue APIs and Dispatch-owned lifecycle state:
+## Worker Runbooks
 
-- **Normal lane:** `GET /api/agents/{agentName}/queue?lane=normal`
-- **Escalated lane:** `GET /api/agents/{agentName}/queue?lane=escalated`
+`worker-runbooks/` contains the execution contract for each lane:
 
-Workers claim work via `POST /api/issues/claim` and update lifecycle status via Dispatch status/lease/checkpoint APIs. GitHub Projects are fully deprecated and must not be queried or mutated by active workflow scripts.
+| Runbook | Scope |
+|---------|-------|
+| `shared-dispatch-worker.md` | Shared rules for all lanes (status contract, preflight, direct push, PR rules) |
+| `local-lane-worker.md` | Local lane specifics |
+| `cloud-lane-worker.md` | Cloud lane specifics |
+| `frontier-lane-worker.md` | Frontier lane specifics |
 
-Normal/Escalated worker selection starts with deterministic local preflight, not model judgment:
+## Excluded
 
-```bash
-DISPATCH_AGENT_NAME=saffron-normal python3 scripts/dispatch_worker_preflight.py --lane normal --claim --json
-DISPATCH_AGENT_NAME=saffron-escalated python3 scripts/dispatch_worker_preflight.py --lane escalated --claim --json
-```
-
-The preflight result action decides the worker path:
-- `clear` / `stuck` — reply with the provided `terminal` and stop.
-- `pr-fix` — update the existing PR only.
-- `resume-active-work` — obey the returned `nextAction` exactly.
-- `claim-ready-issue` — implement the returned claimed Ready issue.
-
-Cron result text must match the terminal contract. Use:
-
-```bash
-printf '%s\n' "$FINAL_TEXT" | python3 scripts/worker_result_guard.py
-```
-
-Board status contract:
-- `status/backlog` = needs triage/grooming, not ready for agents.
-- `status/ready` = groomed/actionable and available to claim.
-- `status/in-progress` = claimed or implementation started.
-- `status/in-review` = PR opened/checks/review pending while the issue remains open.
-- `status/done` = GitHub issue is closed/terminal only.
-
-Hard rule: opening or updating a PR is not Done. An open issue with an unmerged PR must be In Review, not Done.
-
-Work selection:
-- PR-fix queue items from Dispatch have precedence.
-- Workers consume exactly one actionable item per run.
-- Workers prefer Ready work and do not consume Backlog unless explicitly requested.
-- Renovate issues are excluded from agent queues unless explicitly requested.
-- If Dispatch returns active work, a checkpoint, or `nextAction`, workers obey that next action exactly, perform one bounded step, update Dispatch with the result/checkpoint, and stop.
-
-## Agent-Owned Backlog Grooming
-
-Backlog grooming is an agent intelligence workflow. Scripts may collect
-candidate data and apply explicit Saffron-authored decisions through Dispatch,
-but scripts must not call models directly.
-
-Collect backlog candidates for the Saffron heartbeat/sub-agent handoff:
-
-```bash
-python3 scripts/backlog_groomer.py --max 10
-```
-
-Or call the lower-level collector directly:
-
-```bash
-python3 scripts/project_groom.py --no-sync --groom-backlog --groom-backlog-only --groom-backlog-max 10
-```
-
-The collector writes a JSON request under
-`.state/backlog_grooming_requests/`. Each candidate includes GitHub issue
-metadata, labels, body, recent comments, and an `agentBrief` that a Saffron
-heartbeat turn or Saffron sub-agent can use for the judgment step.
-
-Saffron/sub-agent recommendations should be translated into Dispatch grooming
-actions:
-
-- `ready` -> `POST /api/issues/groom` with `action: "promote_to_ready"`.
-- `escalated` -> `POST /api/issues/groom` with `action: "escalate"` and then ensure the issue is ready/claimable when appropriate.
-- `needs-info` -> `POST /api/issues/groom` with `action: "mark_needs_info"`.
-- `needs-human` / policy ambiguity -> `POST /api/issues/groom` with `action: "mark_not_ready"` and a clear reason.
-- blocked dependencies -> `POST /api/issues/groom` with `action: "mark_blocked"`.
-
-Labels remain the source of truth: `status/backlog` is not worker-ready.
-Promoting an issue to worker queues requires changing the GitHub/Dispatch
-status label to `status/ready`.
-
-The removed flags `--groom-backlog-use-llm` and `--groom-backlog-apply` now
-fail intentionally. If a workflow needs judgment, spawn or run Saffron agent
-work; do not reintroduce direct model calls into scripts.
-
-Affected cron jobs:
-- `(Saffron): MC: Normal` — normal lane, uses Dispatch normal queue
-- `(Saffron): MC: Escalated` — escalated lane, uses Dispatch escalated queue
-
-Heartbeat (Saffron agent) owns the policy decision for worker cron
-enabled state. The decision is made explicit by running, in this order:
-
-```bash
-# 1. Probe both lanes. The probe is the source of truth for work.
-python3 scripts/dispatch_work_probe.py --lane normal --json
-python3 scripts/dispatch_work_probe.py --lane escalated --json
-```
-
-```bash
-# 2. If probe.hasWork == true, enable the cron for that lane:
-python3 scripts/dispatch_worker_cron.py --lane normal   --enable --reason "<probe verdict>" --apply --json
-python3 scripts/dispatch_worker_cron.py --lane escalated   --enable --reason "<probe verdict>" --apply --json
-```
-
-```bash
-# 3. If probe.hasWork == false, disable the cron for that lane:
-python3 scripts/dispatch_worker_cron.py --lane normal   --disable --reason "<probe verdict>" --apply --json
-python3 scripts/dispatch_worker_cron.py --lane escalated   --disable --reason "<probe verdict>" --apply --json
-```
-
-```bash
-# 4. If probe.action == "stuck", surface `needsAttention` in the heartbeat
-#    reply and do NOT silently enable or disable.
-```
-
-`scripts/dispatch_worker_cron.py` is the only actuator allowed to mutate
-worker cron enabled state. It only runs the whitelisted
-`openclaw cron edit <id> --enable|--disable` command. It refuses to touch
-schedule, model, prompt, delivery, alerts, or any other cron setting, and
-defaults to dry-run. Pass `--apply` to actually mutate.
-
-`project_groom.py` is grooming/reporting only. It must not call
-`openclaw cron edit` or any cron mutation.
+The following must never be committed:
+- **HEARTBEAT.md** — PVC-backed runtime copy; version the public-safe reference at `docs/heartbeat.md`
+- **cron/jobs.json** — Runtime state, managed by `openclaw cron`
+- **.state/*** — Runtime queue state and watch lists
+- **pr_fix_queue.json** — Legacy local queue state
+- Any file containing tokens, secrets, or credentials
+- Any OpenClaw agent config, session, or memory files
 
 ## Security
 
-Secrets and credentials must never be committed. All token handling is done via environment variables injected at runtime.
+Secrets and credentials must never be committed. All token handling is done via
+environment variables (`DISPATCH_URL`, `DISPATCH_AGENT_TOKEN`) injected at runtime.

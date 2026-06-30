@@ -1,11 +1,11 @@
-# Normal-Lane Worker
+# Local-Lane Worker
 
-Lane: `normal`.
+Lane: `local`.
 
 Worker identity:
 
 ```bash
-export DISPATCH_AGENT_NAME=saffron-normal
+export DISPATCH_AGENT_NAME=saffron-local
 ```
 
 Read first:
@@ -16,7 +16,7 @@ Read first:
 Run deterministic preflight before model judgment:
 
 ```bash
-DISPATCH_AGENT_NAME=saffron-normal python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/dispatch_worker_preflight.py --lane normal --claim --json
+DISPATCH_AGENT_NAME=saffron-local python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/dispatch_worker_preflight.py --lane local --claim --json
 ```
 
 Preflight actions:
@@ -27,8 +27,8 @@ Preflight actions:
 
 ## Queue Semantics
 
-- Consume normal lane only.
-- Prefer active/checkpointed work for `saffron-normal`.
+- Consume local lane only.
+- Prefer active/checkpointed work for `saffron-local`.
 - Otherwise pick the first unclaimed claimable `status/ready` item.
 - Do not consume `status/backlog`.
 - Do not consume Renovate issues unless explicitly requested.
