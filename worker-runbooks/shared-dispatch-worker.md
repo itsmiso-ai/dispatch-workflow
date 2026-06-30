@@ -11,6 +11,8 @@ after this file.
 - Dispatch owns queues, claims, leases, checkpoints, lane assignment, status
   transitions, and `nextAction`.
 - GitHub Projects are deprecated. Do not read or mutate them.
+- Saffron does not locally groom backlog, judge lanes, or apply status labels
+  outside Dispatch APIs.
 
 ## Status Contract
 
@@ -65,8 +67,6 @@ If Dispatch returns active work:
 If lane is missing or mismatched, end:
 `Stuck: active work lane mismatch or could not be verified.`
 
-## Implementation Gate
-
 ## Direct Push Rule (Misospace Only)
 
 All saffron/* and worker-created branches must be pushed **directly** to the
@@ -77,10 +77,7 @@ All saffron/* and worker-created branches must be pushed **directly** to the
 - `gh pr create` must always result in a same-org PR. After creating, verify:
   `gh pr view --json isCrossRepository` returns `false`.
 - Cross-repo/fork PRs **break the AI PR review CI** because GitHub does not
-  forward secrets (e.g. `ACTIONS_APP_ID`, `ACTIONS_APP_PRIVATE_KEY`) to fork
-  PR runs. The review job will fail with:
-  `Error: The 'client-id' (or deprecated 'app-id') input must be set to a
-  non-empty string.`
+  forward secrets to fork PR runs.
 
 If `isCrossRepository` is true, the push is wrong. Fix it before reporting
 `Done`. Do not just close and recreate the PR — re-push to the right remote
@@ -120,6 +117,20 @@ PR body must start with exactly one of:
 - `Refs #{number}`
 
 No heading or blank line before that keyword.
+
+### PR Body Footer (worker + model)
+
+Every worker PR must end with:
+
+```markdown
+<!-- saffron-worker-footer -->
+Worker: saffron-{lane}
+Model: {model-id}
+```
+
+Where `{lane}` is `local`, `cloud`, or `frontier`, and `{model-id}` is the runtime
+model identifier (e.g. `litellm/nvidia`). This footer must be the last thing
+in the PR body.
 
 ## Final Guard
 

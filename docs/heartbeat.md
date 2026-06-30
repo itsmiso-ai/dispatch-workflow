@@ -151,14 +151,18 @@ python3 scripts/dispatch_work_probe.py --lane escalated --json
 
 ```bash
 # 2. If probe.hasWork == true, enable the cron for that lane:
-python3 scripts/dispatch_worker_cron.py --lane normal   --enable --reason "<probe verdict, e.g. active-follow-up>" --apply --json
-python3 scripts/dispatch_worker_cron.py --lane escalated   --enable --reason "<probe verdict, e.g. ready-issue>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane normal \
+  --enable --reason "<probe verdict, e.g. active-follow-up>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated \
+  --enable --reason "<probe verdict, e.g. ready-issue>" --apply --json
 ```
 
 ```bash
 # 3. If probe.hasWork == false, disable the cron for that lane:
-python3 scripts/dispatch_worker_cron.py --lane normal   --disable --reason "<probe verdict, e.g. clear>" --apply --json
-python3 scripts/dispatch_worker_cron.py --lane escalated   --disable --reason "<probe verdict, e.g. clear>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane normal \
+  --disable --reason "<probe verdict, e.g. clear>" --apply --json
+python3 scripts/dispatch_worker_cron.py --lane escalated \
+  --disable --reason "<probe verdict, e.g. clear>" --apply --json
 ```
 
 ```bash
