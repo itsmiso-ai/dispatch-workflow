@@ -10,9 +10,9 @@ fail loudly instead of silently resurrecting workspace-local JSON as source of
 truth. The old local `.state/pr_fix_queue.json` is no longer authoritative.
 
 Lane compatibility:
-  - "escalated" is canonical for Saffron prompts.
-  - Dispatch stores lanes as uppercase enum values.
-  - "gpt" is accepted as a legacy alias for "escalated".
+  - "local", "cloud", "frontier" are the 3-tier canonical lanes.
+  - "normal" and "escalated" are accepted for backward compatibility.
+  - "gpt" is accepted as a legacy alias for "frontier".
 """
 
 from __future__ import annotations
@@ -29,16 +29,22 @@ from pathlib import Path
 from typing import Any
 
 STATE_PATH = Path("/home/node/.openclaw/workspace-saffron/.state/pr_fix_queue.json")
-VALID_LANES = {"normal", "escalated", "needs-human"}
-LEGACY_LANE_ALIAS = {"gpt": "escalated", "GPT": "escalated"}
+VALID_LANES = {"local", "cloud", "frontier", "normal", "escalated", "needs-human"}
+LEGACY_LANE_ALIAS = {"normal": "local", "escalated": "frontier", "gpt": "frontier", "GPT": "frontier"}
 VALID_STATUSES = {"queued", "fixed", "blocked", "stale", "ignored"}
 
 LANE_TO_DISPATCH = {
+    "local": "local",
+    "cloud": "cloud",
+    "frontier": "frontier",
     "normal": "normal",
     "escalated": "escalated",
     "needs-human": "needs-human",
 }
 DISPATCH_LANE_TO_LOCAL = {
+    "LOCAL": "local",
+    "CLOUD": "cloud",
+    "FRONTIER": "frontier",
     "NORMAL": "normal",
     "ESCALATED": "escalated",
     "GPT": "escalated",
@@ -46,6 +52,9 @@ DISPATCH_LANE_TO_LOCAL = {
     "needs-human": "needs-human",
     "normal": "normal",
     "escalated": "escalated",
+    "local": "local",
+    "cloud": "cloud",
+    "frontier": "frontier",
     "gpt": "escalated",
 }
 
@@ -174,7 +183,7 @@ def enqueue(
     payload: dict[str, Any] = {
         "repo": repo,
         "pr": int(pr),
-        "lane": LANE_TO_DISPATCH[canonical_lane],
+        "lane": LANE_TO_DISPATCH.get(canonical_lane, canonical_lane),
         "reason": reason,
         "feedback": feedback,
         "evidenceKey": evidence_key,
