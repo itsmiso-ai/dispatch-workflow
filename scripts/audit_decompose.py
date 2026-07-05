@@ -300,6 +300,7 @@ def parse_candidates(repo: str, parent: Issue) -> tuple[list[ChildCandidate], st
     section = extract_h2_section(parent.body, "Recommended issue breakdown")
     source = "recommended"
     raw_items: list[str] = []
+    candidates: list[ChildCandidate] = []
     if section:
         raw_items = parse_numbered_items(section)
 
@@ -397,6 +398,19 @@ def existing_child(repo: str, marker: str) -> dict[str, Any] | None:
     return None
 
 
+def find_open_issue_by_title(repo: str, title: str) -> dict[str, Any] | None:
+    """Find an existing open issue in the repo with an exact title match.
+    Used for cross-umbrella dedup so concurrent audit umbrellas don't create
+    duplicate child issues for the same finding.
+    """
+    # GitHub search treats quotes as a phrase query
+    q = f'repo:{repo} is:issue is:open in:title "{title}"'
+    result = gh_json("/search/issues", query={"q": q})
+    for issue in result.get("items", []):
+        if str(issue.get("title") or "").strip().lower() == title.strip().lower():
+            return issue
+    return None
+
 def same_labels(current: list[dict[str, Any]], desired: list[str]) -> bool:
     return {str(label.get("name")) for label in current} == set(desired)
 
@@ -439,6 +453,17 @@ def create_or_update_child(
 
     if not apply:
         return ChildResult(number=0, title=candidate.title, url="", action="would-create")
+
+    # Cross-umbrella dedup: before creating, check for an existing open issue
+    # with the same title in this repo (another umbrella may have already
+    # decomposed the same finding). This prevents triplication when multiple
+    # audit umbrellas exist for the same week.
+    existing = find_open_issue_by_title(repo, candidate.title)
+    if existing:
+        number = int(existing["number"])
+        url = str(existing.get("html_url") or "")
+        print(f"  dedup: found existing open issue #{number} with same title, skipping creation")
+        return ChildResult(number=number, title=candidate.title, url=url, action="dedup-skipped")
 
     created = gh_json(
         f"/repos/{repo}/issues",
