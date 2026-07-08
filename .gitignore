@@ -23,6 +23,11 @@ scripts/*
 !scripts/audit_decompose.py
 !scripts/project_groom.py
 
+# Allow tests.
+!tests/
+tests/*
+!tests/test_audit_decompose.py
+
 # Explicit never-track rules.
 HEARTBEAT.md
 cron/
