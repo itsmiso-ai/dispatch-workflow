@@ -34,7 +34,7 @@ DECOMPOSE_CLOSE = "<!-- /audit-decompose:v1 -->"
 TITLE_MAX = 120
 PRIORITY_RE = re.compile(r"^\s*(?:\*\*)?\[?P([0-3])\]?\s*(?:[-:\u2013\u2014]|--)\s*", re.I)
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-H2_RE = re.compile(r"^##\s+", re.M)
+HEADING_RE = re.compile(r"^#{2,3}\s+", re.M)
 ISSUE_REF_RE = re.compile(r"#\d+")
 
 
@@ -217,13 +217,13 @@ def title_from_item(raw: str) -> tuple[str, int | None]:
     return normalize_title(title_source), priority
 
 
-def extract_h2_section(body: str, heading: str) -> str | None:
-    pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.I | re.M)
+def extract_section(body: str, heading: str) -> str | None:
+    pattern = re.compile(rf"^#{{2,3}}\s+{re.escape(heading)}\s*$", re.I | re.M)
     match = pattern.search(body)
     if not match:
         return None
     start = match.end()
-    next_match = H2_RE.search(body, start)
+    next_match = HEADING_RE.search(body, start)
     end = next_match.start() if next_match else len(body)
     return body[start:end].strip()
 
@@ -251,7 +251,7 @@ def parse_numbered_items(section: str) -> list[str]:
 
 
 def extract_top_findings(body: str) -> dict[str, tuple[int | None, str]]:
-    section = extract_h2_section(body, "Top findings")
+    section = extract_section(body, "Top findings")
     if not section:
         return {}
     matches = list(re.finditer(r"^###\s+(.+?)\s*$", section, re.M))
@@ -297,7 +297,7 @@ def stable_key(repo: str, issue_number: int, title: str) -> str:
 
 def parse_candidates(repo: str, parent: Issue) -> tuple[list[ChildCandidate], str]:
     findings = extract_top_findings(parent.body)
-    section = extract_h2_section(parent.body, "Recommended issue breakdown")
+    section = extract_section(parent.body, "Recommended issue breakdown")
     source = "recommended"
     raw_items: list[str] = []
     candidates: list[ChildCandidate] = []
@@ -601,7 +601,7 @@ def is_candidate_parent(issue: dict[str, Any]) -> bool:
             return False
     if "weekly tech debt audit" not in title and "audit" not in title:
         return False
-    return bool(extract_h2_section(body, "Recommended issue breakdown") or extract_h2_section(body, "Top findings"))
+    return bool(extract_section(body, "Recommended issue breakdown") or extract_section(body, "Top findings"))
 
 
 def scan(apply: bool) -> int:
@@ -610,9 +610,10 @@ def scan(apply: bool) -> int:
     for repo in tracked_repos():
         issues = gh_paginated(f"/repos/{repo}/issues", {"state": "open"})
         for issue in issues:
-            labels = {str(label.get("name")) for label in issue.get("labels", [])}
-            if not ({"audit", "needs-gpt"} & labels):
-                continue
+            # is_candidate_parent checks title + body structure;
+            # label filter removed — audit sub-agents don't
+            # always apply the "audit" label, causing valid
+            # umbrella issues to be silently skipped.
             if not is_candidate_parent(issue):
                 continue
             checked += 1
