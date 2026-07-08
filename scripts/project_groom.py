@@ -23,10 +23,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from pr_fix_queue import queued_items as queued_pr_fixes
-
-from dispatch_work_probe import probe_work
-
 GH = os.environ.get("GH", "/home/node/.local/bin/gh")
 ROOT = Path(__file__).resolve().parents[1]
 LANE_JUDGE = str(Path(__file__).with_name("issue_lane_judge.py"))
