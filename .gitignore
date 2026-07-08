@@ -5,56 +5,23 @@
 !.gitignore
 !README.md
 
-# Allow selected docs directory entries.
+# Allow docs.
 !docs/
 docs/*
 !docs/heartbeat.md
-!docs/subagent-patterns.md
 
-# Allow worker runbooks.
-!worker-runbooks/
-worker-runbooks/*
-!worker-runbooks/shared-dispatch-worker.md
-!worker-runbooks/normal-lane-worker.md
-!worker-runbooks/escalated-lane-worker.md
-
-# Allow sanitized cron prompt templates.
+# Allow cron prompt templates.
 !cron-prompts/
 cron-prompts/*
 !cron-prompts/README.md
-!cron-prompts/normal-worker.md
-!cron-prompts/escalated-worker.md
 !cron-prompts/nightly-audit-decomposer.md
 !cron-prompts/weekly-audit.md
-!cron-prompts/daily-pr-review.md
 
-# Allow selected scripts directory entries.
+# Allow scripts.
 !scripts/
 scripts/*
-
-# Dispatch workflow scripts.
-!scripts/dispatch_reporter.py
 !scripts/audit_decompose.py
-!scripts/backlog_groomer.py
-!scripts/dispatch_work_update.py
-!scripts/dispatch_work_probe.py
-!scripts/dispatch_worker_cron.py
-!scripts/dispatch_worker_preflight.py
-!scripts/issue_lane_judge.py
 !scripts/project_groom.py
-!scripts/project_backlog_sync.py
-!scripts/wishlist_read_board.py
-!scripts/wishlist_read_gpt_audit_board.py
-!scripts/pr_fix_queue.py
-!scripts/heartbeat.py
-!scripts/research_before_task.py
-!scripts/sync_summary.py
-!scripts/worker_result_guard.py
-
-# Allow focused unit tests for the dispatch workflow scripts.
-!tests/
-tests/*
-!tests/test_reconcile_lanes_grooming.py
 
 # Explicit never-track rules.
 HEARTBEAT.md
@@ -73,5 +40,4 @@ cron/**
 *.secret
 __pycache__/
 *.pyc
-*.md.bak
 *.bak
