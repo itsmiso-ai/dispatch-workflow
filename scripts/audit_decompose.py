@@ -34,7 +34,10 @@ DECOMPOSE_CLOSE = "<!-- /audit-decompose:v1 -->"
 TITLE_MAX = 120
 PRIORITY_RE = re.compile(r"^\s*(?:\*\*)?\[?P([0-3])\]?\s*(?:[-:\u2013\u2014]|--)\s*", re.I)
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-HEADING_RE = re.compile(r"^#{2,3}\s+", re.M)
+# A section runs until the next H2 heading. The '### [Pn] Title' recommendation
+# blocks are H3 children of '## Recommended Issue Breakdown', so the boundary must
+# NOT stop at H3 or the section would truncate to empty before any block.
+SECTION_BOUNDARY_RE = re.compile(r"^##\s+", re.M)
 ISSUE_REF_RE = re.compile(r"#\d+")
 
 
@@ -54,7 +57,6 @@ class ChildCandidate:
     title: str
     priority: int | None
     key: str
-    matched_finding: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,7 +225,7 @@ def extract_section(body: str, heading: str) -> str | None:
     if not match:
         return None
     start = match.end()
-    next_match = HEADING_RE.search(body, start)
+    next_match = SECTION_BOUNDARY_RE.search(body, start)
     end = next_match.start() if next_match else len(body)
     return body[start:end].strip()
 
@@ -250,44 +252,45 @@ def parse_numbered_items(section: str) -> list[str]:
     return [item for item in items if item]
 
 
-def extract_top_findings(body: str) -> dict[str, tuple[int | None, str]]:
-    section = extract_section(body, "Top findings")
-    if not section:
-        return {}
-    matches = list(re.finditer(r"^###\s+(.+?)\s*$", section, re.M))
-    findings: dict[str, tuple[int | None, str]] = {}
-    for idx, match in enumerate(matches):
-        heading = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(section)
-        title = normalize_title(heading)
-        findings[title.lower()] = (parse_priority(heading), section[start:end].strip())
-    return findings
+def split_priority_heading(text: str) -> tuple[int | None, str]:
+    """Split a leading priority marker off a recommendation heading/title.
+
+    Handles the v2 contract's '[P1] Title' as well as 'P1 - Title',
+    'P1 — Title', and a plain 'Title' with no priority. Returns
+    (priority, remaining-title)."""
+    stripped = strip_markdown(text)
+    match = re.match(r"^\[?P([0-3])\]?\s*(?:[-:–—]+\s*)?(.*)$", stripped, re.I)
+    if match and match.group(2).strip():
+        return int(match.group(1)), match.group(2).strip()
+    return None, stripped
 
 
-def significant_tokens(text: str) -> set[str]:
-    tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_/-]{3,}", strip_markdown(text).lower()))
-    return {tok for tok in tokens if tok not in {"with", "from", "into", "that", "this", "issue", "audit"}}
+def parse_recommendations(section: str) -> list[tuple[str, int | None, str]]:
+    """Parse the Recommended-issue-breakdown section into
+    (title, priority, body) triples.
 
-
-def match_top_finding(
-    candidate_title: str,
-    candidate_raw: str,
-    findings: dict[str, tuple[int | None, str]],
-) -> str | None:
-    title_l = candidate_title.lower()
-    raw_tokens = significant_tokens(candidate_raw)
-    best_body: str | None = None
-    best_score = 0
-    for finding_title, (_priority, finding_body) in findings.items():
-        if title_l in finding_title or finding_title in title_l:
-            return finding_body
-        finding_text = f"{finding_title}\n{finding_body}".lower()
-        score = sum(1 for token in raw_tokens if token in finding_text)
-        if score > best_score:
-            best_score = score
-            best_body = finding_body
-    return best_body if best_score >= 2 else None
+    v2 strict contract: one '### [Pn] Title' block per issue, body carrying the
+    Problem/Evidence/Acceptance fields, which become the child issue verbatim.
+    Legacy fallback: a numbered list of '**Pn — Title**' items (older umbrellas
+    predating the contract). No cross-referencing of any other section — a
+    recommendation is fully self-contained, so nothing outside the breakdown
+    can leak into a child (the bug that stapled whole priority buckets in)."""
+    blocks = [b.strip() for b in re.split(r"(?m)^(?=###\s+)", section) if b.strip().startswith("###")]
+    if blocks:
+        out: list[tuple[str, int | None, str]] = []
+        for block in blocks:
+            lines = block.splitlines()
+            heading = re.sub(r"^#{2,3}\s+", "", lines[0]).strip()
+            priority, title_source = split_priority_heading(heading)
+            title = normalize_title(title_source)
+            body = "\n".join(lines[1:]).strip()
+            out.append((title, priority, body))
+        return out
+    out = []
+    for raw in parse_numbered_items(section):
+        title, priority = title_from_item(raw)
+        out.append((title, priority, raw))
+    return out
 
 
 def stable_key(repo: str, issue_number: int, title: str) -> str:
@@ -296,49 +299,21 @@ def stable_key(repo: str, issue_number: int, title: str) -> str:
 
 
 def parse_candidates(repo: str, parent: Issue) -> tuple[list[ChildCandidate], str]:
-    findings = extract_top_findings(parent.body)
     section = extract_section(parent.body, "Recommended issue breakdown")
-    source = "recommended"
-    raw_items: list[str] = []
-    candidates: list[ChildCandidate] = []
-    if section:
-        raw_items = parse_numbered_items(section)
-
-    if not raw_items:
-        source = "top-findings"
-        for title, (priority, finding_body) in findings.items():
-            display_title = title[:1].upper() + title[1:]
-            key = stable_key(repo, parent.number, display_title)
-            candidates.append(
-                ChildCandidate(
-                    raw=f"{display_title}\n\n{finding_body}".strip(),
-                    title=display_title,
-                    priority=priority,
-                    key=key,
-                    matched_finding=finding_body,
-                )
-            )
-        return candidates, source
+    if not section:
+        return [], "none"
 
     candidates: list[ChildCandidate] = []
     seen: set[str] = set()
-    for raw in raw_items:
-        title, priority = title_from_item(raw)
+    for title, priority, body in parse_recommendations(section):
         if not title or title.lower() in seen:
             continue
         seen.add(title.lower())
         key = stable_key(repo, parent.number, title)
-        matched_finding = match_top_finding(title, raw, findings)
         candidates.append(
-            ChildCandidate(
-                raw=raw,
-                title=title,
-                priority=priority,
-                key=key,
-                matched_finding=matched_finding,
-            )
+            ChildCandidate(raw=body, title=title, priority=priority, key=key)
         )
-    return candidates, source
+    return candidates, "breakdown"
 
 
 def extract_audit_date(parent: Issue) -> str | None:
@@ -377,13 +352,11 @@ def child_body(repo: str, parent: Issue, candidate: ChildCandidate) -> str:
     parts.extend(
         [
             "",
-            "## Original recommendation",
+            "## Recommendation",
             "",
             candidate.raw.strip(),
         ]
     )
-    if candidate.matched_finding:
-        parts.extend(["", "## Matched top finding", "", candidate.matched_finding.strip()])
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -541,7 +514,7 @@ def process_issue(repo: str, issue_number: int, apply: bool) -> int:
 
     candidates, source = parse_candidates(repo, parent)
     if not candidates:
-        print("Unparseable: no numbered Recommended issue breakdown or Top findings headings found")
+        print("Unparseable: no parseable `## Recommended Issue Breakdown` section found")
         return 1 if apply else 0
 
     labels = list_labels(repo)
@@ -601,7 +574,7 @@ def is_candidate_parent(issue: dict[str, Any]) -> bool:
             return False
     if "weekly tech debt audit" not in title and "audit" not in title:
         return False
-    return bool(extract_section(body, "Recommended issue breakdown") or extract_section(body, "Top findings"))
+    return bool(extract_section(body, "Recommended issue breakdown"))
 
 
 def scan(apply: bool) -> int:
