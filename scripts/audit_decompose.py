@@ -276,15 +276,21 @@ def parse_recommendations(section: str) -> list[tuple[str, int | None, str]]:
     recommendation is fully self-contained, so nothing outside the breakdown
     can leak into a child (the bug that stapled whole priority buckets in)."""
     blocks = [b.strip() for b in re.split(r"(?m)^(?=###\s+)", section) if b.strip().startswith("###")]
-    if blocks:
-        out: list[tuple[str, int | None, str]] = []
-        for block in blocks:
-            lines = block.splitlines()
-            heading = re.sub(r"^#{2,3}\s+", "", lines[0]).strip()
-            priority, title_source = split_priority_heading(heading)
-            title = normalize_title(title_source)
-            body = "\n".join(lines[1:]).strip()
-            out.append((title, priority, body))
+    out: list[tuple[str, int | None, str]] = []
+    for block in blocks:
+        lines = block.splitlines()
+        heading = re.sub(r"^#{2,3}\s+", "", lines[0]).strip()
+        priority, title_source = split_priority_heading(heading)
+        # v2 findings are '### [Pn] Title'. A '###' block without a priority marker
+        # is prose, not a recommendation — e.g. a sibling '### Not worth doing yet'
+        # that the H2-only section boundary swept in. Skip it so it can never become
+        # a child, and so it does not suppress the legacy numbered-list fallback.
+        if priority is None:
+            continue
+        title = normalize_title(title_source)
+        body = "\n".join(lines[1:]).strip()
+        out.append((title, priority, body))
+    if out:
         return out
     out = []
     for raw in parse_numbered_items(section):

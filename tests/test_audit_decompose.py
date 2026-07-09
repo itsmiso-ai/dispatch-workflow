@@ -110,6 +110,52 @@ def test_legacy_numbered_list_still_parses():
     assert cands[1].priority == 2
 
 
+# --- regression (misospace/windowstead#269 -> bogus child #273) ---
+# An old-format umbrella uses an H3 '### Recommended issue breakdown' heading with
+# a numbered list, and a sibling '### Not worth doing yet' H3. Because the section
+# boundary is H2-only, that prose H3 is swept into the breakdown section. It must
+# NOT become the sole child (dropping every real finding) — a '###' block without
+# a [Pn] marker is prose, so the numbered fallback still runs.
+
+WINDOWSTEAD_269_BODY = """## Summary
+Healthy mid-extraction state.
+
+### Recommended issue breakdown
+
+1. **P1 — Audit-decompose cron idempotency** — respect the decompose marker.
+2. **P2 — recruit_worker name pool collision** — 11th recruit reuses a name.
+
+### Not worth doing yet
+
+Carried forward from #221 — still valid:
+- Full pixel-art asset pipeline
+- Web export / network integration
+
+## Decomposed into
+<!-- audit-decompose:v1 -->
+<!-- /audit-decompose:v1 -->
+"""
+
+
+def test_h3_prose_block_does_not_suppress_numbered_fallback():
+    parent = _issue(WINDOWSTEAD_269_BODY)
+    cands, source = A.parse_candidates("misospace/demo", parent)
+    assert source == "breakdown"
+    titles = [c.title.lower() for c in cands]
+    # The swept-in prose heading must never become a child.
+    assert not any("not worth doing" in t for t in titles), titles
+    # The real numbered findings decompose via the legacy fallback.
+    assert len(cands) == 2
+    assert cands[0].priority == 1
+    assert "idempotency" in cands[0].title.lower()
+    assert cands[1].priority == 2
+    # No prose from the swept-in block leaks into a child body.
+    for cand in cands:
+        body = A.child_body("misospace/demo", parent, cand).lower()
+        assert "pixel-art" not in body
+        assert "not worth doing" not in body
+
+
 # --- unit: priority splitting ---
 
 def test_split_priority_heading_variants():
