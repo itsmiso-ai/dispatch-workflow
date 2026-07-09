@@ -583,9 +583,67 @@ def is_candidate_parent(issue: dict[str, Any]) -> bool:
     return bool(extract_section(body, "Recommended issue breakdown"))
 
 
+def decomposed_child_numbers(body: str) -> list[int]:
+    """Child issue numbers listed in the umbrella's `## Decomposed into` block."""
+    if DECOMPOSE_OPEN not in body:
+        return []
+    start = body.find(DECOMPOSE_OPEN) + len(DECOMPOSE_OPEN)
+    end = body.find(DECOMPOSE_CLOSE, start)
+    if end < 0:
+        end = len(body)
+    numbers: list[int] = []
+    for match in re.finditer(r"#(\d+)", body[start:end]):
+        number = int(match.group(1))
+        if number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def close_completed_umbrella(repo: str, issue: dict[str, Any], apply: bool) -> int:
+    """Close an already-decomposed audit umbrella once every child it lists is
+    closed. Umbrellas are kept open while any child is in flight (Jory tracks the
+    decomposed set via the open umbrella). Never closes an umbrella that lists no
+    children — that is a failed or not-yet-run decompose, not a completed one.
+    Returns 1 if it closed (or, in dry-run, would close) the umbrella, else 0."""
+    if "audit" not in str(issue.get("title") or "").lower():
+        return 0
+    children = decomposed_child_numbers(str(issue.get("body") or ""))
+    if not children:
+        return 0
+    try:
+        states = [str(gh_json(f"/repos/{repo}/issues/{n}").get("state") or "") for n in children]
+    except Exception as exc:  # noqa: BLE001 — a child lookup failed; can't confirm completion
+        print(f"  skip auto-close {repo}#{issue.get('number')}: child lookup failed ({exc})")
+        return 0
+    if not all(state == "closed" for state in states):
+        return 0
+
+    number = int(issue["number"])
+    print(f"{'APPLY' if apply else 'DRY-RUN'}: {repo}#{number} — all {len(children)} children closed, closing umbrella")
+    if not apply:
+        return 1
+    gh_json(
+        f"/repos/{repo}/issues/{number}/comments",
+        method="POST",
+        payload={
+            "body": (
+                f"All {len(children)} decomposed child issues are closed — auto-closing "
+                "this audit umbrella. Reopen if follow-up work remains."
+            )
+        },
+    )
+    gh_json(
+        f"/repos/{repo}/issues/{number}",
+        method="PATCH",
+        payload={"state": "closed", "state_reason": "completed"},
+    )
+    return 1
+
+
 def scan(apply: bool) -> int:
     failures = 0
     checked = 0
+    closed = 0
     for repo in tracked_repos():
         issues = gh_paginated(f"/repos/{repo}/issues", {"state": "open"})
         for issue in issues:
@@ -593,11 +651,14 @@ def scan(apply: bool) -> int:
             # label filter removed — audit sub-agents don't
             # always apply the "audit" label, causing valid
             # umbrella issues to be silently skipped.
-            if not is_candidate_parent(issue):
-                continue
-            checked += 1
-            failures += process_issue(repo, int(issue["number"]), apply)
-    print(f"Scan complete: checked={checked} failures={failures}")
+            if is_candidate_parent(issue):
+                checked += 1
+                failures += process_issue(repo, int(issue["number"]), apply)
+            else:
+                # Already-decomposed umbrellas fall here (their marker block lists
+                # child refs). Close them once every child is done.
+                closed += close_completed_umbrella(repo, issue, apply)
+    print(f"Scan complete: checked={checked} closed={closed} failures={failures}")
     return 1 if failures else 0
 
 

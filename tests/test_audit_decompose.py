@@ -6,6 +6,7 @@ self-contained: nothing outside the breakdown section may leak into a child
 (the regression that stapled whole `## Top Findings` priority buckets into
 every child — see test_no_top_findings_leak)."""
 
+import re
 import sys
 from pathlib import Path
 
@@ -205,3 +206,83 @@ def test_duplicate_titles_deduped():
 def test_removed_enrichment_symbols_absent():
     for name in ("extract_top_findings", "match_top_finding", "significant_tokens"):
         assert not hasattr(A, name), f"{name} should be deleted"
+
+
+# --- auto-close: umbrella closes once all its decomposed children are done ---
+
+UMBRELLA_DONE = """## Summary
+audit prose.
+
+## Decomposed into
+<!-- audit-decompose:v1 -->
+- #101 — First finding
+- #102 — Second finding
+<!-- /audit-decompose:v1 -->
+"""
+
+
+def _umbrella(body, number=9, title="Weekly tech debt audit: demo - 2026-07-01"):
+    return {"number": number, "title": title, "body": body}
+
+
+class _FakeGH:
+    """Stub for A.gh_json: returns child states by number, records mutations."""
+
+    def __init__(self, child_states):
+        self.child_states = child_states  # {number: "open"|"closed"}
+        self.calls = []  # (method, path, payload)
+
+    def __call__(self, path, *, method="GET", payload=None, query=None):
+        self.calls.append((method, path, payload))
+        m = re.search(r"/issues/(\d+)$", path)
+        if method == "GET" and m:
+            return {"number": int(m.group(1)), "state": self.child_states[int(m.group(1))]}
+        return {}
+
+
+def test_decomposed_child_numbers_parses_block():
+    assert A.decomposed_child_numbers(UMBRELLA_DONE) == [101, 102]
+    assert A.decomposed_child_numbers("## Summary\nno block here\n") == []
+
+
+def test_close_completed_umbrella_closes_when_all_children_closed(monkeypatch):
+    fake = _FakeGH({101: "closed", 102: "closed"})
+    monkeypatch.setattr(A, "gh_json", fake)
+    rc = A.close_completed_umbrella("misospace/demo", _umbrella(UMBRELLA_DONE), apply=True)
+    assert rc == 1
+    method_paths = [(m, p) for (m, p, _) in fake.calls]
+    assert ("POST", "/repos/misospace/demo/issues/9/comments") in method_paths
+    patch = [c for c in fake.calls if c[0] == "PATCH" and c[1] == "/repos/misospace/demo/issues/9"]
+    assert patch and patch[0][2].get("state") == "closed"
+
+
+def test_close_completed_umbrella_keeps_open_when_a_child_is_open(monkeypatch):
+    fake = _FakeGH({101: "closed", 102: "open"})
+    monkeypatch.setattr(A, "gh_json", fake)
+    rc = A.close_completed_umbrella("misospace/demo", _umbrella(UMBRELLA_DONE), apply=True)
+    assert rc == 0
+    assert not any(m == "PATCH" for (m, _, _) in fake.calls)
+
+
+def test_close_completed_umbrella_never_closes_childless(monkeypatch):
+    fake = _FakeGH({})
+    monkeypatch.setattr(A, "gh_json", fake)
+    empty = _umbrella("## Decomposed into\n<!-- audit-decompose:v1 -->\n<!-- /audit-decompose:v1 -->\n")
+    assert A.close_completed_umbrella("misospace/demo", empty, apply=True) == 0
+    assert fake.calls == []  # bails before any API call
+
+
+def test_close_completed_umbrella_ignores_non_audit(monkeypatch):
+    fake = _FakeGH({101: "closed", 102: "closed"})
+    monkeypatch.setattr(A, "gh_json", fake)
+    issue = _umbrella(UMBRELLA_DONE, title="Some feature request")
+    assert A.close_completed_umbrella("misospace/demo", issue, apply=True) == 0
+    assert fake.calls == []
+
+
+def test_close_completed_umbrella_dry_run_makes_no_mutations(monkeypatch):
+    fake = _FakeGH({101: "closed", 102: "closed"})
+    monkeypatch.setattr(A, "gh_json", fake)
+    rc = A.close_completed_umbrella("misospace/demo", _umbrella(UMBRELLA_DONE), apply=False)
+    assert rc == 1
+    assert not any(m in ("POST", "PATCH") for (m, _, _) in fake.calls)
