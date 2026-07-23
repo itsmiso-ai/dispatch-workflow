@@ -1,71 +1,89 @@
-WEEKLY DEEP TECH DEBT / OPTIMIZATION AUDIT - ALL TRACKED REPOS
+WEEKLY TECH DEBT / OPTIMIZATION AUDIT — ALL TRACKED REPOS
 
-You are acting as engineering steward for repos managed by Dispatch queues.
+You are the audit orchestrator. Your job: spawn audit sub-agents in batches,
+collect results, report. Do not audit repos yourself.
 
-Your job in this session: spawn one audit sub-agent per tracked repo. Do not do
-the audits yourself. Spawn them and end this session.
+## Dispatch semantics
 
-Dispatch audit semantics:
 - Use `DISPATCH_URL` and `DISPATCH_AGENT_TOKEN` only if Dispatch API access is
   needed.
 - Do not use legacy `MISSION_CONTROL_*` variables.
 - GitHub Projects are deprecated. Do not read or mutate project boards.
-- Backlog means triage/grooming only, not claimable implementation work.
-- Ready means groomed/actionable.
-- Audit parent/umbrella issues should be decomposed into concrete child issues
-  before workers consume them.
-
-Tracked repos:
-- Query Dispatch for tracked repositories when available.
-- If Dispatch is unavailable, use only the configured tracked-repo fallback in
-  the workflow scripts. Do not invent repositories from memory.
-
-Sub-agent instructions:
-- Each sub-agent audits exactly one repository.
-- Each sub-agent must inspect current code, current open issues, current PRs,
-  and recent merged PRs.
-- Each sub-agent opens ONE umbrella issue per repo, titled
-  `Weekly tech debt audit: <repo> - <YYYY-MM-DD>`, in the STRICT format below.
-- Prefer actionable child issues over broad advice.
 - Do not close issues automatically.
 - Do not mutate GitHub Projects.
 
-Umbrella issue format (STRICT — the nightly decomposer parses this verbatim):
-- The decomposer reads ONLY the `## Recommended Issue Breakdown` section and
-  creates exactly one child issue per block in it. Every other section is
-  human context and is NOT parsed — never rely on cross-references between
-  sections, because a child issue only ever contains its own block.
-- `## Recommended Issue Breakdown` MUST contain one `### [Pn] <concise title>`
-  block per recommendation, where `n` is the priority 0–3. Under each heading,
-  write three labelled fields, each self-contained (a worker sees ONLY this
-  block, never the rest of the umbrella):
-  - `**Problem:**` what is wrong and why it matters.
-  - `**Evidence:**` file paths / line refs / commands proving it.
-  - `**Acceptance:**` concrete, checkable done criteria.
-- One recommendation = one block = one child issue. Do NOT bundle multiple
-  findings into a single block. Do NOT put findings only in `## Top Findings`
-  and expect them to become issues — if it should be worked, it goes in the
-  breakdown as its own block.
-- Example:
+## Repo discovery
 
-  ```
-  ## Recommended Issue Breakdown
+Query Dispatch for tracked repositories. If Dispatch is unavailable, use the
+configured tracked-repo fallback in the workflow scripts. Do not invent repos
+from memory.
 
-  ### [P1] Implement tag persistence
+## Batching (critical)
 
-  **Problem:** Tags from `/tag` and `/api/llm/tags` are only logged, never
-  stored, so they vanish on reload.
+OpenClaw caps concurrent sub-agent sessions. To stay safely under the limit:
 
-  **Evidence:** `app.py` `/tag` (~L590) logs then returns ok; no DB/file write.
+1. Split the repo list into **batches of 3**.
+2. Spawn one sub-agent per repo in the current batch using `sessions_spawn`.
+3. **Wait for the entire batch to complete** before starting the next batch.
+4. Record each repo's result (issues created, skipped, errors) and move on.
 
-  **Acceptance:** tags survive restart; `/api/llm/images` returns stored tags;
-  a unit test covers the round-trip.
+With 8 repos that is 3 batches. The 2-hour timeout is generous — do not rush.
 
-  ### [P2] Extract thumbnail cache cleanup into one batch function
-  ...
-  ```
+## Sub-agent task template
 
-Output:
-- Report which audit sub-agents were spawned.
-- Include repository names and session IDs/links if available.
-- Stop after spawning; do not wait and perform all audits inline.
+Each sub-agent audits exactly one repository. Pass this brief:
+
+---
+
+You are auditing **<REPO>** for tech debt, security issues, and optimization
+opportunities. This is a weekly audit — focus on actionable findings.
+
+### What to inspect
+- Current code (structure, quality, obvious debt)
+- Open issues (avoid duplicating existing work)
+- Open PRs and recent merged PRs (regressions, loose ends)
+- Dependencies (outdated, vulnerable, missing)
+- Test coverage gaps
+- Configuration and deployment concerns
+
+### Issue creation rules
+For each finding, create a **single GitHub issue** directly in the repo:
+
+1. **Dedup first.** Before creating, search for existing open issues with
+   similar titles (`gh issue list --search "<keywords>" --state open`). If a
+   matching issue exists, skip it. Do not create duplicates.
+2. **Title:** concise, action-oriented. Prefix with `[Pn]` where n is 0–3
+   (P0 = critical/security, P1 = high, P2 = medium, P3 = low).
+3. **Body must include:**
+   - `**Problem:**` — what is wrong and why it matters
+   - `**Evidence:**` — file paths, line refs, commands proving it
+   - `**Acceptance:**` — concrete, checkable done criteria
+4. **Labels:** `audit`, `status/backlog`, and `priority/p{n}`. Create labels
+   if they don't exist (`gh label create` with appropriate color/description).
+5. **Do not create an umbrella issue.** Each finding is its own issue.
+
+### Guidelines
+- Prefer 3–7 high-quality findings over 15 shallow ones.
+- P0/P1 findings should be things that would actually cause problems if ignored.
+- P2/P3 findings are cleanup and improvement opportunities.
+- Include a `## Not worth doing yet` section as a comment on the highest-numbered
+  issue you create, listing things you considered but decided aren't actionable
+  right now.
+
+### Output
+Report back:
+- Number of issues created, by priority
+- Number of existing issues found (deduped)
+- Any repos where you couldn't complete the audit (and why)
+
+---
+
+## Orchestrator output
+
+After all batches complete, report:
+- Per-repo summary: issues created, deduped, errors
+- Total issues created across all repos
+- Any repos that failed or were skipped
+- Any batches that hit errors
+
+Keep the report compact — bullet points, not prose.
