@@ -11,29 +11,28 @@ Dispatch application (`misospace/dispatch`).
 ## Current State
 
 Dispatch sync, grooming, and worker execution are handled by k8s CronJobs
-and Foreman. The Saffron heartbeat is a no-op. This repo retains only the
-two scripts that active Saffron crons depend on:
+and Foreman. The Saffron heartbeat is a no-op. This repo retains the workflow
+prompt and small scripts that active Saffron crons depend on:
 
 | Cron | Script | Schedule |
 |------|--------|----------|
-| Weekly Audit of Misospace | `project_groom.py --list-tracked-repos` | Wed 1am MT |
-| Nightly Audit Decomposer | `audit_decompose.py --scan --apply` | Daily 2am MT |
+| Nightly Tech Debt Audit | `select_audit_repos.py select --count 1` | Daily 1am MT |
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `audit_decompose.py` | Nightly audit decomposer: creates child issues from audit umbrella parents |
 | `project_groom.py` | Dispatch queue utilities; `--list-tracked-repos` returns tracked repos from Dispatch API |
+| `select_audit_repos.py` | Selects the oldest audit from the live Dispatch repo list and records Saffron-side audit recency |
+| `create_audit_issue.py` | Serializes audit issue creation, checks for existing issues, and recovers timed-out creates before retrying |
 
 ## Cron Prompts
 
-`cron-prompts/` contains prompt templates for the two active crons:
+`cron-prompts/` contains prompt templates for the active audit cron:
 
 | Template | Cron |
 |----------|------|
-| `weekly-audit.md` | Weekly Misospace audit |
-| `nightly-audit-decomposer.md` | Nightly audit decomposition |
+| `weekly-audit.md` | Nightly rotating Misospace audit |
 
 ## Excluded
 

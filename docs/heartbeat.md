@@ -21,5 +21,12 @@ and anything LilDrunkenSmurf asks for directly.
 
 | Cron | Schedule | Script |
 |------|----------|--------|
-| Weekly Audit of Misospace | Wed 1am MT | `project_groom.py --list-tracked-repos` |
-| Nightly Audit Decomposer | Daily 2am MT | `audit_decompose.py --scan --apply` |
+| Nightly Tech Debt Audit | Daily 1am MT | `select_audit_repos.py select --count 3` |
+
+The audit cron asks Dispatch for the enabled repository inventory, then uses
+Saffron-owned state in `.state/audit-rotation.json` to select one repo with the
+oldest successful audit timestamp. A fresh state file bootstraps its
+timestamps from existing direct finding issues carrying the `audit` label.
+ A repo only advances after its child reports `completed`; partial and failed runs remain
+eligible for the next run. A short lease prevents overlapping cron runs from
+selecting the same repo.
