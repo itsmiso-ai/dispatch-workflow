@@ -22,11 +22,15 @@ cron-prompts/*
 scripts/*
 !scripts/audit_decompose.py
 !scripts/project_groom.py
+!scripts/select_audit_repos.py
+!scripts/create_audit_issue.py
 
 # Allow tests.
 !tests/
 tests/*
 !tests/test_audit_decompose.py
+!tests/test_select_audit_repos.py
+!tests/test_create_audit_issue.py
 
 # Explicit never-track rules.
 HEARTBEAT.md
