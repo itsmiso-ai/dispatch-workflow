@@ -344,6 +344,22 @@ def record_audit(
         return _record_audit(path, repo, status, error, completed_at, lease_run_at)
 
 
+def release_lease(path: Path, repo: str, lease_run_at: str | None = None) -> dict[str, Any]:
+    """Release a lease when selection was made for a check but no audit ran."""
+    with state_lock(path):
+        state = load_state(path)
+        entry = state["repos"].get(repo)
+        if not isinstance(entry, dict):
+            raise SelectorError(f"repository is not in the current tracked-repo state: {repo}")
+        current_lease = timestamp_or_none(entry.get("leaseRunAt"))
+        if lease_run_at and current_lease and timestamp_or_none(lease_run_at) != current_lease:
+            raise SelectorError(f"audit lease is no longer owned by this run: {repo}")
+        entry.pop("leaseUntil", None)
+        entry.pop("leaseRunAt", None)
+        save_state(path, state)
+        return {"repo": repo, "released": True}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Select and record rotating repository audits")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
@@ -359,6 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--error")
     record.add_argument("--completed-at")
     record.add_argument("--lease-run-at")
+
+    release = subparsers.add_parser("release", help="Release an unused selection lease")
+    release.add_argument("--repo", required=True)
+    release.add_argument("--lease-run-at")
     return parser
 
 
@@ -371,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.lease_seconds < 1:
                 raise SelectorError("--lease-seconds must be positive")
             output = select_repos(args.state_file, args.count, args.lease_seconds)
-        else:
+        elif args.command == "record":
             output = record_audit(
                 args.state_file,
                 args.repo,
@@ -380,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.completed_at,
                 args.lease_run_at,
             )
+        else:
+            output = release_lease(args.state_file, args.repo, args.lease_run_at)
     except SelectorError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

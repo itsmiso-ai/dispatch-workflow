@@ -154,6 +154,13 @@ Report back:
   `lastSuccessfulAuditAt` only for `completed`; do not manually edit the state
   file or mark partial/failed work successful.
 
+If the child never started, release the unused lease instead of recording a
+successful audit:
+
+```bash
+python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_audit_repos.py release --repo <REPO> --lease-run-at <LEASE_RUN_AT>
+```
+
 ---
 
 ## Orchestrator output
