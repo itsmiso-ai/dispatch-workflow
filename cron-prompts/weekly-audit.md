@@ -117,9 +117,10 @@ still a duplicate unless there is concrete evidence of regression; do not use
 - Prefer 3–7 high-quality findings over 15 shallow ones.
 - P0/P1 findings should be things that would actually cause problems if ignored.
 - P2/P3 findings are cleanup and improvement opportunities.
-- Include a `## Not worth doing yet` section as a comment on the highest-numbered
-  issue you create, listing things you considered but decided aren't actionable
-  right now.
+- Apply an actionability gate before filing. If a finding is not worth doing,
+  is merely speculative, or has no concrete acceptance criteria, discard it.
+  Do not file it, mention it in an issue comment, or include a "not worth doing"
+  section in the report.
 
 ### Output
 Report back:
