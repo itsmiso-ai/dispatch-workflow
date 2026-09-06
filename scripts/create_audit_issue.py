@@ -29,6 +29,7 @@ DEFAULT_LEDGER = ROOT / ".state" / "audit-create-ledger.json"
 DEFAULT_GH = "/home/node/.local/bin/gh"
 UTC = dt.timezone.utc
 TITLE_PRIORITY_RE = re.compile(r"^\s*\[P[0-3]\]\s*", re.IGNORECASE)
+ALLOWED_AUDIT_STATUS_LABEL = "status/backlog"
 
 
 class IssueCreateError(RuntimeError):
@@ -77,6 +78,20 @@ def validate_issue(title: str, body: str) -> None:
     for section in ("**Evidence:**", "**Acceptance:**"):
         if body.find(section, problem) < 0:
             raise IssueCreateError(f"audit issue body is missing {section}")
+
+
+def validate_labels(labels: list[str]) -> None:
+    # Claim and lane-transition labels are owned by Dispatch sync/grooming.
+    # An audit run that applies them pre-claims the issue and blocks workers.
+    for label in labels:
+        if label.startswith("agent/"):
+            raise IssueCreateError(
+                f"label {label!r} is a Dispatch claim label; audits must not apply agent/* labels"
+            )
+        if label.startswith("status/") and label != ALLOWED_AUDIT_STATUS_LABEL:
+            raise IssueCreateError(
+                f"label {label!r} is owned by Dispatch grooming; audits may only set {ALLOWED_AUDIT_STATUS_LABEL!r}"
+            )
 
 
 def gh_issue_list(repo: str, title: str) -> list[dict[str, Any]]:
@@ -244,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         body = read_body(args)
         validate_issue(args.title, body)
+        validate_labels(args.labels)
         # Keep the wrapper's validation separate from the file used by gh so a
         # caller can safely pass --body without relying on shell quoting.
         if args.body is not None:
