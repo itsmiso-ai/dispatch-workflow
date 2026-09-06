@@ -8,6 +8,18 @@ from scripts import create_audit_issue
 
 
 class CreateAuditIssueTests(unittest.TestCase):
+    def test_agent_claim_label_is_rejected(self):
+        with self.assertRaises(create_audit_issue.IssueCreateError):
+            create_audit_issue.validate_labels(["audit", "agent/saffron", "status/backlog"])
+
+    def test_non_backlog_status_label_is_rejected(self):
+        for label in ("status/ready", "status/in-progress", "status/done"):
+            with self.subTest(label=label), self.assertRaises(create_audit_issue.IssueCreateError):
+                create_audit_issue.validate_labels([label])
+
+    def test_standard_audit_labels_are_allowed(self):
+        create_audit_issue.validate_labels(["audit", "status/backlog", "priority/p1", "type/security", "area/security"])
+
     def test_normalized_priority_title_is_same_finding(self):
         self.assertEqual(
             create_audit_issue.normalize_title("[P1] Fix the thing"),
