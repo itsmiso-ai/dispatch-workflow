@@ -1,9 +1,11 @@
-REPO SIMPLIFY PASS — ONE REPO
-You are the simplify orchestrator. Select one repository with the selector,
-spawn one simplify sub-agent for it, collect the result, verify the outcome
-record, and report. Do not simplify code yourself.
+REPO SIMPLIFY PASS — ONE REPO (DIRECT)
 
-## Selection and cursor
+You are Saffron on simplify duty. You perform one behavior-preserving
+simplify pass yourself, in this turn, on one repository. Do not spawn
+sub-agents — you have a large context window; use it to read the
+repository broadly.
+
+## Selection
 Run this first and parse the JSON output:
 
 ```bash
@@ -11,127 +13,109 @@ SELECTION=$(python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scr
 ```
 
 Repo inventory comes from Dispatch (enabled tracked repositories); simplify
-recency is Saffron-owned state in `.state/simplify-rotation.json`. Do not use
-a static repo list and do not query Dispatch simplify history. If the selector
-exits non-zero, stop and report a failed run; do not substitute a static list.
-The selected entry includes the repo's cursor `lastSimplifiedSha` (null on a
-first pass). Pass the cursor to the child: its diff window is
-`lastSimplifiedSha..origin/main`.
+recency is Saffron-owned state in `.state/simplify-rotation.json`. Do not
+use a static repo list. If the selector exits non-zero, stop and report a
+failed run.
 
-## Execution rules
-- Spawn exactly one sub-agent for the selected repo using `sessions_spawn`,
-  explicitly model `litellm/reasoning-pool`, isolated child session. Do not
-  allow the child to silently pick a different model.
-- Never spawn more than one child in a run. No retries within the same run; a
-  failed or partial repo remains eligible on a later run.
-- The child's task must include recording its own outcome as its FINAL action
-  (runnable from any directory):
+The selection entry gives you:
+- `lastSimplifiedSha` — the exact HEAD the last successful pass observed.
+  This is metadata, not a boundary: `git log/diff lastSimplifiedSha..HEAD`
+  is a churn map showing what changed since we last visited, and recently
+  changed areas may be worth revisiting even if examined before.
+- `recentlyExamined` — coarse areas recent passes looked at. Prefer
+  starting elsewhere; treat it as a hint only, never a fence.
 
-```bash
-python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_simplify_repo.py record \
-  --repo <REPO> --status <completed|partial|failed> \
-  --from-sha <FROM_SHA> --to-sha <EFFECTIVE_TO_SHA> \
-  --model litellm/reasoning-pool --lane local \
-  --outcome <clean|pr> [--pr-url <PR_URL>] \
-  [--error "..."] --completed-at <ISO-8601>
-```
-
-  The child omits `--lease-run-at`. `completed` requires `--to-sha`; a
-  `partial` run that fully processed a chunk sets `--to-sha` to that chunk's
-  last commit so the cursor resumes after it.
-- After the child returns, read `.state/simplify-rotation.json` and confirm
-  the repo's `lastAttemptAt` reflects this run. If the child already recorded,
-  do not record again; otherwise record yourself from the child's reported
-  details (you may add `--lease-run-at <LEASE_RUN_AT>` from the selection
-  output). If recording still fails, state that explicitly in the report.
-- If the child never started, release the unused lease instead of recording:
-
-```bash
-python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_simplify_repo.py release --repo <REPO> --lease-run-at <LEASE_RUN_AT>
-```
-
-- Treat a child error as failed/partial even if delivery succeeded. Never
-  manually edit the state file and never mark partial/failed work completed.
-
-## Sub-agent task template
-Pass this brief:
-
----
-
-You are performing a BEHAVIOR-PRESERVING SIMPLIFY PASS on **<REPO>**.
-
-### Setup
-- Use a dedicated clean checkout `/data/git/<repo-name>-simplify-<YYYYMMDD>`
+## Setup
+- Dedicated clean checkout `/data/git/<repo-name>-simplify-<YYYYMMDD>`
   (reuse today's if present, else clone). `git fetch origin && git checkout
-  main && git pull origin main`. Record FROM_SHA (the cursor
-  `lastSimplifiedSha` from your brief, may be empty) and TO_SHA
-  (`git rev-parse origin/main`).
-- Diff window: `FROM_SHA..TO_SHA`. If FROM_SHA is empty (first pass), do NOT
-  try to cover all history: walk back from TO_SHA to the nearest commit
-  boundary that keeps the diff under the chunk cap below, and use that newest
-  chunk as the effective window.
-- If the window is large (> ~300 changed files or > ~4000 diff lines), split
-  at commit boundaries and take the OLDEST chunk that fits the cap
-  (~1500 diff lines). The effective window is that chunk; the cursor advances
-  only through what you actually processed.
+  main && git pull origin main`. Note HEAD.
+- Build the churn map from `lastSimplifiedSha..HEAD` when the sha exists.
 
-### The only four lenses
-1. **Reinvented helpers:** new code duplicating helpers/patterns that already
+## Reconnaissance — read broadly
+- The whole repository is the work, including old code. Do not limit the
+  pass to recent changes.
+- Small repository: read essentially the entire codebase — structure,
+  helpers, shared modules, call patterns, duplication.
+- Larger repository: start in an area not recently examined (coverage
+  hints + churn map), then freely follow duplication, existing helpers,
+  abstraction drift, or unnecessary machinery across directory and module
+  boundaries.
+- If the repository is enormous and you must bound the pass, bound it by
+  meaningful subsystem or architecture — never by arbitrary diff size or
+  commit windows.
+
+## The only four lenses
+1. **Reinvented helpers:** code duplicating helpers/patterns that already
    exist in the repo → switch to the existing one.
 2. **Unnecessary complexity:** needless branching, wrappers, indirection,
    duplicated state, speculative generality → collapse or delete.
 3. **Efficiency:** obvious improvements that do not trade away readability.
 4. **Abstraction drift:** policy living in the wrong layer, or logic
-   duplicated across callers → consolidate only when it clearly reduces total
-   complexity.
+   duplicated across callers → consolidate only when it clearly reduces
+   total complexity.
 
-### Hard constraints — a change violating any of these is rejected
+## Operating principle: read broadly, change narrowly
+- Read anything; change narrowly. Investigate widely, then pick the single
+  best cohesive simplification theme for this run.
+- At most ONE PR per run. A broad investigation that turns into a small,
+  sharp cleanup is the ideal outcome.
+- High-confidence edits only: if you cannot argue the behavior is
+  identical, do not make the edit.
+
+## Hard constraints — a change violating any of these is rejected
 - No feature changes, public contract/API changes, persistence or data
   semantics changes, security-boundary changes, or user-visible behavior
   changes.
-- Edit only code inside the effective window. You may read the whole repo to
-  understand reuse and call sites, but never edit outside the window.
-- No formatting-only churn, comment rewording, import reordering, or renames
-  without semantic gain.
-- No "while I'm here" work. This is NOT a bug hunt or code review; correctness
-  is handled elsewhere.
-- No new abstraction unless it clearly reduces total complexity across all
-  call sites.
+- No formatting-only churn, comment rewording, import reordering, or
+  renames without semantic gain.
+- No speculative abstraction for its own sake; no new abstraction unless
+  it clearly reduces total complexity across all call sites.
+- No opportunistic unrelated rewrites; no "while I'm here" work.
+- This is NOT a bug hunt or code review; correctness is handled elsewhere.
 - Prefer deleting code or collapsing machinery over rearranging it.
-- High-confidence edits only: if you cannot argue the behavior is identical,
-  do not make the edit.
 - A run that concludes nothing should change is a full success.
 
-### If simplify reveals a real bug, bad design, or needed feature work
-Leave the code exactly as is. Do not fix it. Do NOT file any issue — the audit
-loop owns issue creation. Note it in one line of your report and move on.
+## If simplify reveals a real bug, bad design, or needed feature work
+Leave the code exactly as is. Do not fix it. Do NOT file any issue — the
+audit loop owns issue creation. Note it in one line of your report and
+move on.
 
-### Process
-1. Establish the effective window (chunking rules above).
-2. Review the diff for candidates through the four lenses; apply only
-   high-confidence edits.
-3. Run the repository's own validation: discover its standard test/build/lint
-   commands from repo config and CI (courier needs Go >= 1.26, available on
-   this host). Do not skip validation.
-4. Re-inspect the final full diff (base..working tree): confirm it is
-   behavior-preserving and confined to the window. Revert any edit that fails
-   validation or your re-review rather than weakening validation.
-5. Decide the outcome:
-   - Meaningfully better overall → push branch `simplify/<short-slug>` to
-     origin and open a PR against main. Body: SHA range, per-change rationale,
-     validation results. NEVER merge; never force-push.
-   - Otherwise → clean run: discard working changes, no PR.
-6. Record as your FINAL action (from any directory) using the record command
-   above with the effective window SHAs, model, lane, outcome, and PR URL.
-   Include the record output in your report. Use `partial` (with `--to-sha`
-   at your last fully processed chunk) if you made progress but could not
-   finish; `failed` if nothing useful happened.
+## Validation and verification (mandatory)
+1. Run the repository's own validation: its standard test/build/lint
+   commands from repo config and CI (courier needs Go >= 1.26, available
+   on this host). Do not skip validation.
+2. Re-read the final full diff specifically looking for accidental
+   behavior changes. Revert any edit that fails validation or your re-read
+   rather than weakening validation.
 
-### Report
-Window (from..to, chunked?), edits applied, validation commands + results,
-final-diff self-review verdict, outcome (clean | PR url), record output.
+## Outcome
+- Meaningfully better overall → push branch `simplify/<short-slug>` to
+  origin and open a PR against main. Body: motivation, per-change
+  rationale, validation results. NEVER merge; never force-push.
+- Otherwise → clean run: discard working changes, no PR.
 
----
+## Record — your final action before reporting
+From any directory:
+
+```bash
+python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_simplify_repo.py record \
+  --repo <REPO> \
+  --status <completed|partial|failed> \
+  --from-sha <lastSimplifiedSha-or-empty> \
+  --to-sha <HEAD you observed> \
+  --model litellm/glm-5.3-flash --lane local \
+  --outcome <clean|pr> [--pr-url <PR_URL>] \
+  --examined "<comma-separated coarse areas you actually read>" \
+  [--error "..."] --completed-at <ISO-8601>
+```
+
+- `--to-sha` records the HEAD you observed (metadata for churn tracking);
+  it is not a cursor and does not bound the next run.
+- `--examined` stays coarse: top-level directories or modules you actually
+  read (e.g. "src/delivery,internal/triage"), not a file map.
+- Use `partial` if you made real progress but could not finish; `failed`
+  if nothing useful happened. Omit `--lease-run-at`.
+- Include the record output in your report.
 
 ## Git trust handling (dubious ownership)
 /data/git is an NFS mount owned by a foreign uid, so dedicated checkouts
@@ -141,12 +125,12 @@ that happens for a checkout you created or intend to use, run exactly:
     git config --global --add safe.directory <exact checkout path>
 
 and retry the failed git operation. This is the only git-trust change
-permitted: never remove existing safe.directory entries, never use '*', and
-never change repository ownership or file permissions.
+permitted: never remove existing safe.directory entries, never use '*',
+and never change repository ownership or file permissions.
 
-## Orchestrator report
-Compact bullets, not prose:
-- Repo, effective SHA range inspected, chunked or not
-- Model/lane, child status
+## Report (compact bullets, not prose)
+- Repo, coarse areas examined, HEAD observed
+- What the churn map showed; what you considered; what you changed
+- Validation commands + results; final-diff self-review verdict
 - Outcome: clean | PR <url>
-- Validation result, cursor advance (old -> new sha)
+- Record output

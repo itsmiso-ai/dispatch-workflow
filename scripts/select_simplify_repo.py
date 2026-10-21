@@ -2,9 +2,12 @@
 """Select and record rotating repository simplify passes.
 
 Mirrors select_audit_repos.py machinery (Dispatch inventory, flock'd state,
-lease acquire/release) but tracks simplify cursors: per-repo
-``lastSimplifiedAt`` and the exact inspected HEAD ``lastSimplifiedSha``.
-Simplify state lives in its own file and never touches audit state.
+lease acquire/release) but tracks simplify recency: per-repo
+``lastSimplifiedAt`` plus the exact HEAD each successful pass observed
+(``lastSimplifiedSha``) as metadata for churn maps, and coarse
+``recentlyExamined`` coverage hints. These are informational: a pass may
+read and edit anywhere in the repository. Simplify state lives in its own
+file and never touches audit state.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ def empty_entry() -> dict[str, Any]:
     return {
         "lastSimplifiedAt": None,
         "lastSimplifiedSha": None,
+        "recentlyExamined": None,
         "lastAttemptAt": None,
         "lastStatus": None,
         "lastError": None,
@@ -103,6 +107,7 @@ def _select_repos(path: Path, count: int, lease_seconds: int) -> dict[str, Any]:
                 "fullName": repo,
                 "lastSimplifiedAt": timestamp_or_none(entries[repo].get("lastSimplifiedAt")),
                 "lastSimplifiedSha": entries[repo].get("lastSimplifiedSha"),
+                "recentlyExamined": entries[repo].get("recentlyExamined"),
                 "lastStatus": entries[repo].get("lastStatus"),
                 "leaseRunAt": timestamp_or_none(entries[repo].get("leaseRunAt")),
                 "leaseUntil": timestamp_or_none(entries[repo].get("leaseUntil")),
@@ -133,9 +138,10 @@ def _record(
     lane: str | None,
     outcome: str | None,
     pr_url: str | None,
+    examined: str | None,
 ) -> dict[str, Any]:
     if status == "completed" and not to_sha:
-        raise SelectorError("completed simplify runs must advance the cursor: --to-sha is required")
+        raise SelectorError("completed simplify runs must record the observed HEAD: --to-sha is required")
     if outcome == "pr" and not pr_url:
         raise SelectorError("outcome 'pr' requires --pr-url")
     state = load_state(path)
@@ -154,17 +160,15 @@ def _record(
     entry.pop("leaseUntil", None)
     entry.pop("leaseRunAt", None)
 
-    advanced = False
+    examined_areas = [a.strip() for a in (examined or "").split(",") if a.strip()] or None
+    if examined_areas:
+        # Coverage hints are informational; any pass that actually read areas
+        # (even one that later failed) refreshes them.
+        entry["recentlyExamined"] = examined_areas
     if status == "completed":
         entry["lastSimplifiedAt"] = recorded_at
         if to_sha:
             entry["lastSimplifiedSha"] = to_sha
-            advanced = True
-    elif status == "partial" and to_sha:
-        # A partial run that fully processed a chunk may advance the cursor to
-        # that chunk boundary so the next run resumes after it.
-        entry["lastSimplifiedSha"] = to_sha
-        advanced = True
 
     _append_history(
         entry,
@@ -177,8 +181,8 @@ def _record(
             "model": model,
             "lane": lane,
             "prUrl": pr_url,
+            "examined": examined_areas,
             "error": error,
-            "cursorAdvanced": advanced,
         },
     )
     save_state(path, state)
@@ -187,7 +191,6 @@ def _record(
         "status": status,
         "recordedAt": recorded_at,
         "lastSimplifiedSha": entry.get("lastSimplifiedSha"),
-        "cursorAdvanced": advanced,
     }
 
 
@@ -213,6 +216,7 @@ def _show(path: Path) -> dict[str, Any]:
         out[repo] = {
             "lastSimplifiedAt": timestamp_or_none(entry.get("lastSimplifiedAt")),
             "lastSimplifiedSha": entry.get("lastSimplifiedSha"),
+            "recentlyExamined": entry.get("recentlyExamined"),
             "lastStatus": entry.get("lastStatus"),
             "lastError": entry.get("lastError"),
             "recentHistory": (entry.get("history") or [])[-3:],
@@ -241,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--lane")
     record.add_argument("--outcome", choices=("clean", "pr"))
     record.add_argument("--pr-url")
+    record.add_argument("--examined", help="comma-separated coarse areas actually examined")
 
     release = subparsers.add_parser("release", help="Release an unused selection lease")
     release.add_argument("--repo", required=True)
@@ -273,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.lane,
                 args.outcome,
                 args.pr_url,
+            args.examined,
             )
         elif args.command == "release":
             output = _release(args.state_file, args.repo, args.lease_run_at)
