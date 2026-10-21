@@ -1,57 +1,42 @@
-NIGHTLY TECH DEBT / OPTIMIZATION AUDIT — ONE REPO
+TECH DEBT / OPTIMIZATION AUDIT — ONE REPO (DIRECT)
 
-You are the audit orchestrator. Your job: select one repository using the
-selector below, spawn one audit sub-agent for it, collect its result, record the
-outcome, and report. Do not audit the repository yourself.
+You are the audit orchestrator. You select one repository with the selector,
+audit it yourself in this turn, record the outcome, and report. Do not spawn
+sub-agents and do not delegate the audit.
 
-## Audit selection and cursor
-
-Run this command first and parse its JSON output. The command must run from
-the workflow checkout so its ignored `.state` directory is shared by all
+## Audit selection and recency
+Run this command first and parse its JSON output. The command must run in
+the workflow checkout so the ignored `.state` directory is shared by all
 phase jobs:
 
 ```bash
 SELECTION=$(python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_audit_repos.py select --count 1 --lease-seconds 5400)
 ```
 
-The selector queries Dispatch only for the enabled repository inventory. Audit
+The selector queries Dispatch for the enabled repository inventory. Audit
 recency is Saffron-owned state in `.state/audit-rotation.json`; do not query
-Dispatch for audit history and do not use a static repo list. The selector
-bootstraps an empty state file from existing direct finding issues carrying the
-`audit` label (historical umbrella issues are ignored). The single entry in
-`.repos[0]` is the only repository to audit this run. If the selector exits
-non-zero, stop and report a failed run; do not substitute a static list.
+Dispatch audit history and do not use a static repo list. The selector
+bootstraps an empty state file from existing direct-finding issues carrying
+the `audit` label (historical umbrella issues are ignored). `.repos[0]` is
+the single repository for this run. If the selector exits non-zero, stop and
+report a failed run; do not substitute a static list.
 
 ## Dispatch semantics
-
-- Use `DISPATCH_URL` and `DISPATCH_AGENT_TOKEN` only if Dispatch API access is
+- Use `DISPATCH_URL` and `DISPATCH_AGENT_TOKEN` only for Dispatch API access
   needed.
 - Do not use legacy `MISSION_CONTROL_*` variables.
 - GitHub Projects are deprecated. Do not read or mutate project boards.
 - Do not close issues automatically.
-- Do not mutate GitHub Projects.
 
-## Batch execution (critical)
+## Execution
+- Audit the selected repository yourself, in this turn. Never spawn
+  sub-agents for the audit.
+- No retries within the same run; a failed or partial repo remains eligible
+  for the next run.
 
-OpenClaw caps concurrent sub-agent sessions. To stay safely under the limit:
-
-1. Spawn exactly one sub-agent for the selected repo using `sessions_spawn`.
-2. **Wait for the child to complete** before recording its outcome.
-3. Record the repo's result (issues created, skipped, errors).
-
-Never spawn more than one child in a run. Retries are not allowed in the same
-run; a failed or partial repo remains eligible next night. When calling
-`sessions_spawn`, explicitly use model `minimax/MiniMax-M2.7` and an isolated
-child session. Do not allow the child to silently select a different model.
-
-## Sub-agent task template
-
-Each sub-agent audits exactly one repository. Pass this brief:
-
----
-
+## Audit brief
 You are auditing **<REPO>** for tech debt, security issues, and optimization
-opportunities. This is a weekly audit — focus on actionable findings.
+opportunities. This is a recurring audit — focus on actionable findings.
 
 ### What to inspect
 - Current code (structure, quality, obvious debt)
@@ -62,8 +47,9 @@ opportunities. This is a weekly audit — focus on actionable findings.
 - Configuration and deployment concerns
 
 ### Issue creation rules
-For each finding, create a **single GitHub issue** directly in the repo. Use the
-workflow's safe create wrapper rather than calling `gh issue create` directly:
+For each finding, create a single GitHub issue directly in the repo. Use the
+workflow's safe create wrapper rather than calling `gh issue create`
+directly:
 
 ```bash
 python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/create_audit_issue.py \
@@ -75,16 +61,17 @@ The wrapper serializes creates, checks open and closed issues by normalized
 exact title, records the result in `.state/audit-create-ledger.json`, and
 rechecks GitHub after a failed or timed-out request before permitting any
 retry. Set `AUDIT_RUN_ID` to the selector lease timestamp. A closed match is
-still a duplicate unless there is concrete evidence of regression; do not use
-`--allow-regression` for ordinary audit findings.
+still a duplicate unless there is concrete evidence of regression; do not
+use `--allow-regression` for ordinary audit findings.
 
-1. **Dedup first.** Before creating, search existing open and recently closed
-   issues with specific keywords (`gh issue list --search "<keywords>" --state all`).
-   An issue covering the same behavior/files is a duplicate even when its title
-   differs. A closed issue is still a duplicate unless there is concrete
-   evidence of regression. If a create request fails or times out, search by
-   exact title before retrying; never blindly submit the same issue again.
-2. **Title:** concise, action-oriented. Prefix with `[Pn]` where n is 0–3
+1. **Dedup first.** Before creating, search existing open and recently
+   closed issues with specific keywords
+   (`gh issue list --search "<keywords>" --state all`). An issue covering
+   the same behavior or files is a duplicate even when its title differs. A
+   closed issue is still a duplicate unless there is concrete evidence of
+   regression. If a create request fails or times out, search by exact
+   title before retrying; never blindly submit the same issue again.
+2. **Title:** concise, action-oriented. Prefix with `[Pn]` where n is 0-3
    (P0 = critical/security, P1 = high, P2 = medium, P3 = low).
 3. **Body must include:**
    - `Ask: <one imperative sentence>` — one concrete imperative sentence on
@@ -97,7 +84,7 @@ still a duplicate unless there is concrete evidence of regression; do not use
    - `**Problem:**` — what is wrong and why it matters
    - `**Evidence:**` — file paths, line refs, commands proving it
    - `**Acceptance:**` — concrete, checkable done criteria
-4. **Required issue-body shape:** Put the two required lines before
+4. **Required issue-body shape:** put the two required lines before
    `**Problem:**`, for example:
 
    ```text
@@ -114,63 +101,72 @@ still a duplicate unless there is concrete evidence of regression; do not use
 6. **Do not create an umbrella issue.** Each finding is its own issue.
 
 ### Guidelines
-- Prefer 3–7 high-quality findings over 15 shallow ones.
-- P0/P1 findings should be things that would actually cause problems if ignored.
+- Prefer 3-7 high-quality findings over 15 shallow ones.
+- P0/P1 findings should be things that would actually cause problems if
+  ignored.
 - P2/P3 findings are cleanup and improvement opportunities.
-- Apply an actionability gate before filing. If a finding is not worth doing,
-  is merely speculative, or has no concrete acceptance criteria, discard it.
-  Do not file it, mention it in an issue comment, or include a "not worth doing"
-  section in the report.
+- Apply an actionability gate before filing. If a finding is not worth
+  doing, is merely speculative, or has no concrete acceptance criteria,
+  discard it. Do not file it, mention it in an issue comment, or include a
+  "not worth doing" section in the report.
 
-### Output
+## Output
 Report back:
 - Number of issues created, by priority
 - Number of existing issues found (deduped)
-- Any repos where you couldn't complete the audit (and why)
+- Anything you could not complete (and why)
 
-### Failure and cursor rules
+## Failure and recording rules
 - Do not start any retry work in this run. Keep the run result auditable and
   leave failed or partial repos eligible for the next run.
-- Treat a child error as a failed repo audit even if the parent run or Discord
-  delivery succeeds.
-- Record each child by its exact repo and final status: `completed`, `partial`,
-  `failed`, or `skipped`. Include the error text and batch number for failures.
-- A child that reports an error after creating issues is `partial`, not
-  `completed`. Verify its issue activity on GitHub before retrying and dedupe
-  against those issues; never assume an error means that no issues were filed.
-- When a child is `partial`, preserve the issue numbers and findings already
-  verified. The next nightly run must dedupe against those issues and audit the
-  remaining surface area rather than blindly repeating the whole repository scan.
-- After all children return, record each result with the selector. Use the
-  child completion timestamp when available:
+- Treat an error as a failed or partial audit even if Discord delivery
+  succeeds.
+- Record the result by its exact repo and final status: `completed`,
+  `partial`, `failed`, or `skipped`. Include the error text for failures.
+- If you created issues and then hit an error, the run is `partial`, not
+  `completed`. Verify the issue activity on GitHub before describing the
+  outcome; never assume an error means that no issues were filed.
+- When partial, preserve the issue numbers and findings already verified.
+  The next run must dedupe against those issues and audit the remaining
+  surface area rather than blindly repeating the whole scan.
+- Record with the selector (use your completion timestamp when available):
 
   ```bash
   python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_audit_repos.py record --repo <REPO> --status <completed|partial|failed|skipped> [--error "..."] [--completed-at <ISO-8601>] [--lease-run-at <LEASE_RUN_AT>]
   ```
 
-  Use `completed` only when the child finished its repository audit normally.
-  Record `partial` when it created issues but then errored. Record `failed`
-  when no useful audit completed. Record `skipped` only when explicitly skipped.
-- Record a result for every selected repo, even when a child errors. Advance
-  `lastSuccessfulAuditAt` only for `completed`; do not manually edit the state
-  file or mark partial/failed work successful.
+  Use `completed` only when the audit finished normally. Record `partial`
+  when issues were created but the run then errored. Record `failed` when no
+  useful audit completed. Record `skipped` only when explicitly skipped.
+- Record a result even when the run errors. After recording, read
+  `.state/audit-rotation.json` and confirm the selected repo's
+  `lastAttemptAt` reflects this run; if recording failed, state that
+  explicitly in the final report. Advance `lastSuccessfulAuditAt` only for
+  `completed`; do not manually edit the state file and never mark
+  partial/failed work successful.
+- If the run must abort before any audit work happens, release the unused
+  lease instead of recording a successful audit:
 
-If the child never started, release the unused lease instead of recording a
-successful audit:
+  ```bash
+  python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_audit_repos.py release --repo <REPO> --lease-run-at <LEASE_RUN_AT>
+  ```
 
-```bash
-python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/select_audit_repos.py release --repo <REPO> --lease-run-at <LEASE_RUN_AT>
-```
-
----
-
-## Orchestrator output
-
-After the selected child completes, report:
+## Report
+Compact bullets, not prose:
 - The selected repo: issues created, deduped, and errors
-- The lease timestamp and child status
-- No retries are attempted in this nightly mode
-- Use an overall `partial`/`failed` result when any repo did not complete; a
-  delivered report alone is not an `ok` audit result
+- The lease timestamp and final status
+- No retries are attempted in this mode
+- Use an overall `partial`/`failed` result when the audit did not complete;
+  a delivered report alone is not an `ok` audit result
 
-Keep the report compact — bullet points, not prose.
+## Git trust handling (dubious ownership)
+/data/git is an NFS mount owned by a foreign uid, so dedicated audit
+checkouts under /data/git can trigger git's 'detected dubious ownership'
+check. When that happens for a checkout you created or intend to use for
+this audit, run exactly:
+
+    git config --global --add safe.directory <exact checkout path>
+
+and retry the failed git operation. This is the only git-trust change
+permitted: never remove existing safe.directory entries, never use '*', and
+never change repository ownership or file permissions.

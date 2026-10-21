@@ -16,12 +16,14 @@ cron-prompts/*
 !cron-prompts/README.md
 !cron-prompts/nightly-audit-decomposer.md
 !cron-prompts/weekly-audit.md
+!cron-prompts/simplify-pass.md
 
 # Allow scripts.
 !scripts/
 scripts/*
 !scripts/audit_decompose.py
 !scripts/project_groom.py
+!scripts/select_simplify_repo.py
 !scripts/select_audit_repos.py
 !scripts/create_audit_issue.py
 
