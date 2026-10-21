@@ -22,6 +22,7 @@ cron-prompts/*
 scripts/*
 !scripts/audit_decompose.py
 !scripts/project_groom.py
+!scripts/select_simplify_repo.py
 !scripts/select_audit_repos.py
 !scripts/create_audit_issue.py
 
