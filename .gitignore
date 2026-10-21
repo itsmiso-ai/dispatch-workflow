@@ -16,6 +16,7 @@ cron-prompts/*
 !cron-prompts/README.md
 !cron-prompts/nightly-audit-decomposer.md
 !cron-prompts/weekly-audit.md
+!cron-prompts/simplify-pass.md
 
 # Allow scripts.
 !scripts/
