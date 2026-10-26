@@ -75,10 +75,32 @@ The selection entry gives you:
 - Prefer deleting code or collapsing machinery over rearranging it.
 - A run that concludes nothing should change is a full success.
 
-## If simplify reveals a real bug, bad design, or needed feature work
-Leave the code exactly as is. Do not fix it. Do NOT file any issue — the
-audit loop owns issue creation. Note it in one line of your report and
-move on.
+## If simplify incidentally discovers a verified bug
+Simplify's primary duty is behavior-preserving simplification. Do not turn
+the pass into a bug hunt or code review. If, while reading broadly, you
+incidentally encounter a clearly verifiable bug (e.g., security leak,
+incorrect API construction, obvious logic error), you may file at most one
+issue for that incidental finding, and only after confirming it is not a
+duplicate.
+
+Constraints:
+- Do NOT fix the bug in the simplify PR. Leave the code exactly as is for
+  the simplify work.
+- No broad debt hunt, no multiple issues, no behavioral fixes in the
+  simplify PR.
+- Only file for bugs that are clearly verified with evidence from the
+  repository source, not speculation.
+- Use the safe wrapper to create and deduplicate:
+  `python3 /home/node/.openclaw/workspace-saffron/dispatch-workflow/scripts/create_audit_issue.py`
+  with a title starting `[P0]`, `[P1]`, `[P2]`, or `[P3]`. The body must
+  contain `Ask:`, `Expected files:`, `**Problem:**`, `**Evidence:**`,
+  `**Acceptance:**` sections.
+- Dedup against open and closed issues by normalized title. Do not apply
+  `agent/*` labels or `status/*` except `status/backlog`.
+- Note the linked issue in one line of your report and continue with the
+  simplify pass. Do not block the simplify pass on issue creation.
+- If the finding is bad design or needed feature work rather than a bug,
+  leave it as a one-line note in the report only; do not file an issue.
 
 ## Validation and verification (mandatory)
 1. Run the repository's own validation: its standard test/build/lint
