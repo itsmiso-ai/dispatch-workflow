@@ -180,6 +180,7 @@ def empty_entry() -> dict[str, Any]:
         "lastStatus": None,
         "lastError": None,
         "bootstrapSource": None,
+        "consecutiveFailures": 0,
     }
 
 
@@ -265,7 +266,20 @@ def _select_repos(path: Path, count: int, lease_seconds: int) -> dict[str, Any]:
     def sort_key(repo: str) -> tuple[int, dt.datetime, str]:
         timestamp = parse_timestamp(entries[repo].get("lastSuccessfulAuditAt"))
         status = entries[repo].get("lastStatus")
-        status_rank = 0 if status in {"failed", "partial", "skipped"} else 1 if status is None else 2
+        # Bounded retry backoff for non-completed audits to avoid infinite priority.
+        # RETRY_RANK_CAP is the number of consecutive non-completed attempts a repo
+        # receives before it is demoted to the tail of the rotation. This preserves
+        # immediate retry for transient failures while ensuring a persistently failing
+        # repo does not monopolize the rotation.
+        RETRY_RANK_CAP = 2
+        if status in {"failed", "partial", "skipped"}:
+            failures = int(entries[repo].get("consecutiveFailures") or 0)
+            # Fresh failures get priority (rank 0); chronic failures are demoted to rank 3.
+            status_rank = 0 if failures < RETRY_RANK_CAP else 3
+        elif status is None:
+            status_rank = 1
+        else:
+            status_rank = 2
         return (status_rank, timestamp or dt.datetime.min.replace(tzinfo=UTC), repo)
 
     available = [repo for repo in repos if not lease_is_active(entries[repo], now)]
@@ -328,6 +342,11 @@ def _record_audit(
         if previous is None or (current is not None and current >= previous):
             entry["lastSuccessfulAuditAt"] = recorded_at
         entry["bootstrapSource"] = "workflow"
+        entry["consecutiveFailures"] = 0
+    else:
+        # Increment consecutive non-completed attempts for partial/failed/skipped.
+        failures = int(entry.get("consecutiveFailures") or 0)
+        entry["consecutiveFailures"] = failures + 1
     save_state(path, state)
     return {"repo": repo, "status": status, "recordedAt": recorded_at}
 
