@@ -43,8 +43,9 @@ report a failed run; do not substitute a static list.
 If the selected repository is a Pinchflat checkout (`misospace/pinchflat` or `CommunityMaintained/pinchflat`), ensure dependencies are bootstrapped before any code inspection or test runs to survive clean checkouts. The following commands were verified to install dependencies successfully and pass full 9 gate checks twice at `/data/git/pinchflat` and `/data/git/pinchflat-audit-verify-20261030`:
 ```bash
 # From repository root
-LC_ALL=C.utf8 MIX_ENV=test mix deps.get
-LC_ALL=C.utf8 COREPACK_HOME=/home/node/.cache/corepack NODE_ENV=development yarn install --frozen-lockfile --production=false
+export LC_ALL=C.utf8 COREPACK_HOME=/home/node/.cache/corepack NODE_ENV=development
+MIX_ENV=test mix deps.get
+yarn install --frozen-lockfile --production=false
 ./tooling/fetch-sqlean.sh
 ```
 Do not upgrade dependencies or commit bootstrap-generated lockfile changes. Preserve any pre-existing user edits. If Hex normalizes lockfile metadata, inspect and undo only the bootstrap-generated delta before validation. Run the repository's standard validation after setup; record any remaining blockers honestly.
