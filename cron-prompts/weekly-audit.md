@@ -39,18 +39,22 @@ report a failed run; do not substitute a static list.
 - No retries within the same run; a failed or partial repo remains eligible
   for the next run.
 
+## Pinchflat bootstrap (verified)
+If the selected repository is a Pinchflat checkout (`misospace/pinchflat` or `CommunityMaintained/pinchflat`), ensure dependencies are bootstrapped before any code inspection or test runs to survive clean checkouts. The following commands were verified to install dependencies successfully and pass full 9 gate checks twice at `/data/git/pinchflat` and `/data/git/pinchflat-audit-verify-20261030`:
+```bash
+# From repository root
+LC_ALL=C.utf8 MIX_ENV=test mix deps.get
+LC_ALL=C.utf8 COREPACK_HOME=/home/node/.cache/corepack NODE_ENV=development yarn install --frozen-lockfile --production=false
+./tooling/fetch-sqlean.sh
+```
+Do not upgrade dependencies or commit bootstrap-generated lockfile changes. Preserve any pre-existing user edits. If Hex normalizes lockfile metadata, inspect and undo only the bootstrap-generated delta before validation. Run the repository's standard validation after setup; record any remaining blockers honestly.
 
-## Retry/backoff semantics
-The audit rotation selector (`select_audit_repos.py`) implements bounded retry
-backoff to avoid a single persistently failing repository monopolizing the
-rotation. A repository that records a non-completed status (partial, failed,
-or skipped) receives one immediate retry on the next scheduled run. If it
-fails again, the selector demotes it to the tail of the rotation (rank 3)
-until all other repositories have been audited since its last successful
-audit. A successful audit resets the consecutive-failure counter and returns
-the repository to normal recency ordering. This preserves honest partial/failure
-history (lastStatus, lastError, lastAttemptAt, consecutiveFailures) without
-fabricating success, and guarantees eventual retry without infinite priority.
+
+## Selection semantics
+The audit rotation selector (`select_audit_repos.py`) implements fair oldest-attempt ordering to prevent starvation.
+Selection key is `(lastAttemptAt fallback lastSuccessfulAuditAt fallback datetime.min, repo)`, i.e. repositories are ordered by how long it has been since their last attempt, with deterministic repo tie-break.
+Active lease filtering is preserved. Honest success fields/counters (`lastStatus`, `lastError`, `lastAttemptAt`, `consecutiveFailures`, `lastSuccessfulAuditAt`) are preserved in state and updated on record, but do not influence selection rank.
+This removes the previous chronic-failure demotion (rank 3) that starved repos like pinchflat, ensuring every repository is eventually retried in a full rotation.
 
 ## Audit brief
 You are auditing **<REPO>** for tech debt, security issues, and optimization

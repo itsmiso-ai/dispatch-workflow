@@ -263,24 +263,17 @@ def _select_repos(path: Path, count: int, lease_seconds: int) -> dict[str, Any]:
     entries = state["repos"]
     now = dt.datetime.now(UTC)
 
-    def sort_key(repo: str) -> tuple[int, dt.datetime, str]:
-        timestamp = parse_timestamp(entries[repo].get("lastSuccessfulAuditAt"))
-        status = entries[repo].get("lastStatus")
-        # Bounded retry backoff for non-completed audits to avoid infinite priority.
-        # RETRY_RANK_CAP is the number of consecutive non-completed attempts a repo
-        # receives before it is demoted to the tail of the rotation. This preserves
-        # immediate retry for transient failures while ensuring a persistently failing
-        # repo does not monopolize the rotation.
-        RETRY_RANK_CAP = 2
-        if status in {"failed", "partial", "skipped"}:
-            failures = int(entries[repo].get("consecutiveFailures") or 0)
-            # Fresh failures get priority (rank 0); chronic failures are demoted to rank 3.
-            status_rank = 0 if failures < RETRY_RANK_CAP else 3
-        elif status is None:
-            status_rank = 1
-        else:
-            status_rank = 2
-        return (status_rank, timestamp or dt.datetime.min.replace(tzinfo=UTC), repo)
+    def sort_key(repo: str) -> tuple[dt.datetime, str]:
+        # Fair oldest-attempt ordering: prioritize repos that have waited longest
+        # since their last attempt, falling back to last successful audit, then min.
+        # This removes the chronic-failure demotion that starved repos like pinchflat.
+        attempt_ts = parse_timestamp(entries[repo].get("lastAttemptAt"))
+        if attempt_ts is None:
+            attempt_ts = parse_timestamp(entries[repo].get("lastSuccessfulAuditAt"))
+        if attempt_ts is None:
+            attempt_ts = dt.datetime.min.replace(tzinfo=UTC)
+        # Deterministic tie-break by repo name
+        return (attempt_ts, repo)
 
     available = [repo for repo in repos if not lease_is_active(entries[repo], now)]
     if len(available) < count:
