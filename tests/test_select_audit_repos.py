@@ -90,7 +90,7 @@ class SelectAuditReposTests(unittest.TestCase):
 
 
 
-    def test_fresh_failure_ranks_before_completed(self):
+    def test_oldest_audit_wins_regardless_of_status(self):
         with tempfile.TemporaryDirectory() as directory:
             state_file = Path(directory) / "audit-rotation.json"
             state_file.write_text(
@@ -107,10 +107,11 @@ class SelectAuditReposTests(unittest.TestCase):
             with patch.object(select_audit_repos, "fetch_tracked_repos", return_value=["org/fail", "org/old"]):
                 result = select_audit_repos.select_repos(state_file, 2)
             names = [r["fullName"] for r in result["repos"]]
-            self.assertEqual(names[0], "org/fail")
-            self.assertEqual(names[1], "org/old")
+            # Oldest successful audit wins; status no longer demotes
+            self.assertEqual(names[0], "org/old")
+            self.assertEqual(names[1], "org/fail")
 
-    def test_chronic_failure_demoted_below_completed(self):
+    def test_chronic_failure_not_demoted_oldest_wins(self):
         with tempfile.TemporaryDirectory() as directory:
             state_file = Path(directory) / "audit-rotation.json"
             state_file.write_text(
@@ -128,8 +129,8 @@ class SelectAuditReposTests(unittest.TestCase):
             with patch.object(select_audit_repos, "fetch_tracked_repos", return_value=["org/chronic", "org/old", "org/new"]):
                 result = select_audit_repos.select_repos(state_file, 2)
             names = [r["fullName"] for r in result["repos"]]
-            # chronic should be last among the two selected (old before chronic)
-            self.assertEqual(names, ["org/old", "org/new"])
+            # Oldest audit wins; chronic is oldest and should be selected
+            self.assertEqual(names, ["org/chronic", "org/old"])
 
     def test_consecutive_failures_increment_on_partial_and_reset_on_completed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -156,8 +157,33 @@ class SelectAuditReposTests(unittest.TestCase):
             self.assertEqual(saved["repos"]["org/repo"]["consecutiveFailures"], 0)
             self.assertEqual(saved["repos"]["org/repo"]["lastSuccessfulAuditAt"], "2026-09-03T00:00:00Z")
 
-    def test_selection_avoids_stuck_repo_after_cap(self):
+    def test_partial_repo_retries_after_each_full_rotation(self):
+        repos = ["org/a", "org/b", "org/chronic"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(json.dumps({"version": 1, "repos": {
+                repo: {"lastAttemptAt": "2020-01-01T00:00:00Z",
+                       "lastSuccessfulAuditAt": "2019-01-01T00:00:00Z",
+                       "lastStatus": "partial" if repo.endswith("chronic") else "completed"}
+                for repo in repos}}))
+            selected = []
+            with patch.object(select_audit_repos, "fetch_tracked_repos", return_value=repos):
+                for turn in range(9):
+                    result = select_audit_repos.select_repos(path, 1)
+                    repo = result["repos"][0]["fullName"]
+                    selected.append(repo)
+                    select_audit_repos.record_audit(
+                        path, repo, "partial" if repo.endswith("chronic") else "completed",
+                        "blocked" if repo.endswith("chronic") else None,
+                        f"2099-01-{turn + 1:02d}T00:00:00Z")
+            self.assertEqual(selected, repos * 3)
+            chronic = json.loads(path.read_text())["repos"]["org/chronic"]
+            self.assertEqual(chronic["lastSuccessfulAuditAt"], "2019-01-01T00:00:00Z")
+            self.assertEqual(chronic["lastStatus"], "partial")
+
+    def test_chronic_partial_repo_is_selected_not_starved(self):
         # Simulate the real pinchflat scenario: one chronic failing repo among others
+        # With fair oldest-attempt ordering, pinchflat (oldest) should be selected
         with tempfile.TemporaryDirectory() as directory:
             state_file = Path(directory) / "audit-rotation.json"
             state_file.write_text(
@@ -174,7 +200,7 @@ class SelectAuditReposTests(unittest.TestCase):
             )
             with patch.object(select_audit_repos, "fetch_tracked_repos", return_value=["misospace/pinchflat", "misospace/musebridge", "misospace/courier"]):
                 result = select_audit_repos.select_repos(state_file, 1)
-            self.assertEqual(result["repos"][0]["fullName"], "misospace/musebridge")
+            self.assertEqual(result["repos"][0]["fullName"], "misospace/pinchflat")
 
 
 if __name__ == "__main__":
