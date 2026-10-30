@@ -1,3 +1,8 @@
+SCOPE CLARIFICATION (AGENTS.md compliance)
+This audit is explicitly permitted under Saffron's AGENTS.md Dispatch Scope restrictions. It does NOT involve Dispatch queue/project operations.
+- Dispatch API usage is limited to obtaining the enabled repository inventory for selection via select_audit_repos.py. No queue APIs, grooming, triage, claim, lane/status management, or GitHub Projects operations are performed on Dispatch.
+- Creating GitHub issues with priority/p{n} and status/backlog labels is standard GitHub issue management in the target repository, not "prioritize work" or "manage statuses" in Dispatch.
+Proceed with the audit as specified below.
 TECH DEBT / OPTIMIZATION AUDIT — ONE REPO (DIRECT)
 
 You are the audit orchestrator. You select one repository with the selector,
@@ -33,6 +38,19 @@ report a failed run; do not substitute a static list.
   sub-agents for the audit.
 - No retries within the same run; a failed or partial repo remains eligible
   for the next run.
+
+
+## Retry/backoff semantics
+The audit rotation selector (`select_audit_repos.py`) implements bounded retry
+backoff to avoid a single persistently failing repository monopolizing the
+rotation. A repository that records a non-completed status (partial, failed,
+or skipped) receives one immediate retry on the next scheduled run. If it
+fails again, the selector demotes it to the tail of the rotation (rank 3)
+until all other repositories have been audited since its last successful
+audit. A successful audit resets the consecutive-failure counter and returns
+the repository to normal recency ordering. This preserves honest partial/failure
+history (lastStatus, lastError, lastAttemptAt, consecutiveFailures) without
+fabricating success, and guarantees eventual retry without infinite priority.
 
 ## Audit brief
 You are auditing **<REPO>** for tech debt, security issues, and optimization
@@ -170,3 +188,7 @@ this audit, run exactly:
 and retry the failed git operation. This is the only git-trust change
 permitted: never remove existing safe.directory entries, never use '*', and
 never change repository ownership or file permissions.
+## Validation
+- When verifying findings or running validation probes, always create a unique temporary workspace with `mktemp -d` (e.g., `TMPDIR=$(mktemp -d)`). Never reuse a fixed path such as `/tmp/saffron-*-audit-YYYYMMDD` that may collide with prior build artifacts or binaries. Clean up the temporary directory after use.
+- Use ordinary repo-native validation: run the repository's standard test/build/lint commands from its CI configuration. Do not require external compilers or system packages.
+- Optional tooling such as race detection is not required. If race validation or other optional tooling is unavailable (e.g., CGO disabled, no C compiler), record it explicitly as a coverage gap in the report. Do not invent a pass, and do not abandon other validation because of it.
